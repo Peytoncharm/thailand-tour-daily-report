@@ -104,6 +104,7 @@ def test_daily_payments():
             "status": "ok",
             "orders_found": stats["orders_found"],
             "orders_due_today": stats["orders_due_today"],
+            "overdue": stats.get("overdue", 0),
             "providers": stats["providers"],
             "message_preview": message,
             "message_length": len(message)

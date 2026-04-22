@@ -165,6 +165,29 @@ def compute_due_today(orders, providers, today):
     return due
 
 
+def compute_overdue(orders, providers, today):
+    """Filter orders whose payment due date is before today (overdue)."""
+    overdue = []
+    for order in orders:
+        tour_date = _parse_tour_date(order)
+        if not tour_date:
+            continue
+
+        prov_name = _provider_name(order)
+        provider = providers.get(prov_name, {})
+
+        payment_trigger = provider.get("Payment_Trigger", "")
+        days_offset = provider.get("Days_Offset", 0)
+
+        due_date = compute_due_date(tour_date, payment_trigger, days_offset)
+        if due_date < today:
+            order["_days_overdue"] = (today - due_date).days
+            overdue.append(order)
+
+    logger.info(f"[PAYMENTS] {len(overdue)} overdue orders out of {len(orders)} candidates")
+    return overdue
+
+
 def _format_bank_line(provider):
     """Format bank details line. Show all fields as-is, don't guess semantics."""
     bank_acct_name = (provider.get("Bank_Account_Name") or "").strip()
@@ -189,39 +212,19 @@ def _format_bank_line(provider):
     return line
 
 
-def build_payments_report(due_orders, providers, today):
-    """Build the LINE message grouped by provider."""
-    if not due_orders:
-        date_str = today.strftime("%d %b %Y")
-        return (
-            f"\u2705 \u0e44\u0e21\u0e48\u0e21\u0e35\u0e23\u0e32\u0e22\u0e01\u0e32\u0e23"
-            f"\u0e08\u0e48\u0e32\u0e22\u0e40\u0e07\u0e34\u0e19 Provider \u0e27\u0e31\u0e19\u0e19\u0e35\u0e49\n"
-            f"\U0001f4c5 {date_str}"
-        )
-
-    # Group by provider
-    grouped = {}
-    for order in due_orders:
-        prov_name = _provider_name(order) or "Unknown Provider"
-        grouped.setdefault(prov_name, []).append(order)
-
-    date_str = today.strftime("%d %b %Y")
-    lines = [
-        f"\U0001f4b0 PROVIDER PAYMENTS DUE \u2014 {date_str}",
-        "\u2501" * 15,
-        "",
-    ]
-
-    grand_total = 0
-    grand_count = 0
+def _build_provider_section(grouped, providers, show_overdue=False):
+    """Build LINE message lines for a group of orders grouped by provider."""
+    lines = []
+    total = 0
+    count = 0
 
     for prov_name in sorted(grouped.keys()):
         orders = grouped[prov_name]
         provider = providers.get(prov_name, {})
 
         prov_total = sum(float(o.get("Net_Cost") or 0) for o in orders)
-        grand_total += prov_total
-        grand_count += len(orders)
+        total += prov_total
+        count += len(orders)
 
         lines.append(
             f"\U0001f3e2 {prov_name} "
@@ -243,11 +246,69 @@ def build_payments_report(due_orders, providers, today):
             tour_str = tour_date.strftime("%d %b") if tour_date else "?"
             amount = _fmt_amount(order.get("Net_Cost"))
 
+            overdue_tag = ""
+            if show_overdue:
+                days = order.get("_days_overdue", 0)
+                overdue_tag = f" ({days} \u0e27\u0e31\u0e19\u0e17\u0e35\u0e48\u0e41\u0e25\u0e49\u0e27)"
+
             lines.append(f"  {i}. {cust_name} ({pax} \u0e04\u0e19) {pkg}")
-            lines.append(f"     \U0001f4c5 {tour_str} | \u0e3f{amount}")
+            lines.append(f"     \U0001f4c5 {tour_str} | \u0e3f{amount}{overdue_tag}")
             lines.append(_format_bank_line(provider))
 
         lines.append("")
+
+    return lines, total, count
+
+
+def build_payments_report(due_orders, overdue_orders, providers, today):
+    """Build the LINE message grouped by provider, with overdue section."""
+    if not due_orders and not overdue_orders:
+        date_str = today.strftime("%d %b %Y")
+        return (
+            f"\u2705 \u0e44\u0e21\u0e48\u0e21\u0e35\u0e23\u0e32\u0e22\u0e01\u0e32\u0e23"
+            f"\u0e08\u0e48\u0e32\u0e22\u0e40\u0e07\u0e34\u0e19 Provider \u0e27\u0e31\u0e19\u0e19\u0e35\u0e49\n"
+            f"\U0001f4c5 {date_str}"
+        )
+
+    date_str = today.strftime("%d %b %Y")
+    lines = [
+        f"\U0001f4b0 PROVIDER PAYMENTS DUE \u2014 {date_str}",
+        "\u2501" * 15,
+        "",
+    ]
+
+    grand_total = 0
+    grand_count = 0
+
+    # Due today section
+    if due_orders:
+        grouped = {}
+        for order in due_orders:
+            prov_name = _provider_name(order) or "Unknown Provider"
+            grouped.setdefault(prov_name, []).append(order)
+
+        section_lines, section_total, section_count = _build_provider_section(grouped, providers)
+        lines.extend(section_lines)
+        grand_total += section_total
+        grand_count += section_count
+
+    # Overdue section
+    if overdue_orders:
+        grouped = {}
+        for order in overdue_orders:
+            prov_name = _provider_name(order) or "Unknown Provider"
+            grouped.setdefault(prov_name, []).append(order)
+
+        lines.append("\u26a0\ufe0f \u0e04\u0e49\u0e32\u0e07\u0e08\u0e48\u0e32\u0e22 (OVERDUE)")
+        lines.append("\u2501" * 15)
+        lines.append("")
+
+        section_lines, section_total, section_count = _build_provider_section(
+            grouped, providers, show_overdue=True
+        )
+        lines.extend(section_lines)
+        grand_total += section_total
+        grand_count += section_count
 
     lines.append("\u2501" * 15)
     lines.append(
@@ -270,19 +331,22 @@ def run_daily_payments():
 
     orders = fetch_unpaid_orders(today)
     if not orders:
-        message = build_payments_report([], {}, today)
-        return message, {"orders_found": 0, "orders_due_today": 0, "providers": 0}
+        message = build_payments_report([], [], {}, today)
+        return message, {"orders_found": 0, "orders_due_today": 0, "overdue": 0, "providers": 0}
 
     # Unique provider names
     provider_names = list({_provider_name(o) for o in orders} - {""})
     providers = fetch_provider_details(provider_names)
 
     due_orders = compute_due_today(orders, providers, today)
-    message = build_payments_report(due_orders, providers, today)
+    overdue_orders = compute_overdue(orders, providers, today)
+    message = build_payments_report(due_orders, overdue_orders, providers, today)
 
+    all_flagged = due_orders + overdue_orders
     stats = {
         "orders_found": len(orders),
         "orders_due_today": len(due_orders),
-        "providers": len({_provider_name(o) for o in due_orders} - {""})
+        "overdue": len(overdue_orders),
+        "providers": len({_provider_name(o) for o in all_flagged} - {""})
     }
     return message, stats
