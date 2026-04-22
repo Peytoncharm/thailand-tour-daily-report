@@ -41,11 +41,11 @@ def fetch_unpaid_orders(today):
     window_start = (today - timedelta(days=7)).strftime("%Y-%m-%d")
     window_end = (today + timedelta(days=7)).strftime("%Y-%m-%d")
 
-    # Don't filter on Provider_Payment_Status in Zoho query — empty/null fields
-    # don't match not_equal. Filter in Python after fetching instead.
+    # Keep Zoho criteria simple — only date range. Filter Status and
+    # Provider_Payment_Status in Python (Zoho doesn't support not_equal
+    # on Pick List fields like Status, and null fields skip not_equal).
     criteria = (
-        f"((Status:not_equal:Cancelled)"
-        f"and(Tour_Date:greater_equal:{window_start})"
+        f"((Tour_Date:greater_equal:{window_start})"
         f"and(Tour_Date:less_equal:{window_end}))"
     )
     logger.info(f"[PAYMENTS] Zoho criteria: {criteria}")
@@ -53,14 +53,15 @@ def fetch_unpaid_orders(today):
     records = zoho_search("Koh_Chang_Orders", criteria, fields=ORDER_FIELDS)
     logger.info(f"[PAYMENTS] Fetched {len(records)} orders from Zoho")
 
-    # Filter out already-paid orders in Python (handles null/empty field correctly)
-    before_paid_filter = len(records)
+    # Filter out Cancelled and already-Paid in Python
+    before_filter = len(records)
     records = [
         r for r in records
-        if (r.get("Provider_Payment_Status") or "").strip() != "Paid"
+        if (r.get("Status") or "").strip() != "Cancelled"
+        and (r.get("Provider_Payment_Status") or "").strip() != "Paid"
     ]
     logger.info(
-        f"[PAYMENTS] {before_paid_filter} total → {len(records)} after excluding Paid"
+        f"[PAYMENTS] {before_filter} total → {len(records)} after excluding Cancelled/Paid"
     )
 
     # Filter to Tour BU package types only
