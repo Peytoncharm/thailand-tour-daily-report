@@ -44,6 +44,54 @@ def refresh_token():
     return _get_access_token()
 
 
+def zoho_get_records(module: str, fields: str = None, max_pages: int = 5) -> list:
+    """Fetch all records from a Zoho CRM module using paginated GET. Returns list of records."""
+    global _access_token
+    token = _get_access_token()
+    if not token:
+        return []
+
+    all_records = []
+    for page in range(1, max_pages + 1):
+        params = {"page": page, "per_page": 200}
+        if fields:
+            params["fields"] = fields
+        try:
+            resp = requests.get(
+                f"{ZOHO_API_BASE}/{module}",
+                headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                params=params,
+                timeout=15
+            )
+            if resp.status_code == 401 and page == 1:
+                _access_token = None
+                token = _get_access_token()
+                if not token:
+                    return []
+                resp = requests.get(
+                    f"{ZOHO_API_BASE}/{module}",
+                    headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                    params=params,
+                    timeout=15
+                )
+            if resp.status_code == 204:
+                break
+            if resp.status_code != 200:
+                logger.error(f"[ZOHO-TH] Get records error {resp.status_code}: {resp.text}")
+                break
+            data = resp.json()
+            records = data.get("data", [])
+            all_records.extend(records)
+            if not data.get("info", {}).get("more_records", False):
+                break
+        except Exception as e:
+            logger.error(f"[ZOHO-TH] Get records exception: {e}")
+            break
+
+    logger.info(f"[ZOHO-TH] Fetched {len(all_records)} total records from {module} ({page} pages)")
+    return all_records
+
+
 def zoho_search(module: str, criteria: str, fields: str = None, page: int = 1) -> list:
     """Search a Zoho CRM module with criteria. Returns list of records."""
     global _access_token

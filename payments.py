@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
-from zoho_thailand import zoho_search
+from zoho_thailand import zoho_search, zoho_get_records
 
 logger = logging.getLogger(__name__)
 
@@ -38,31 +38,37 @@ def compute_due_date(tour_date, payment_trigger, days_offset):
 
 def fetch_unpaid_orders(today):
     """Fetch Koh_Chang_Orders that are unpaid and have tour dates within ±7 days."""
-    window_start = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-    window_end = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    window_start = today - timedelta(days=7)
+    window_end = today + timedelta(days=7)
 
-    # Keep Zoho criteria simple — only date range. Filter Status and
-    # Provider_Payment_Status in Python (Zoho doesn't support not_equal
-    # on Pick List fields like Status, and null fields skip not_equal).
-    criteria = (
-        f"((Tour_Date:greater_equal:{window_start})"
-        f"and(Tour_Date:less_equal:{window_end}))"
-    )
-    logger.info(f"[PAYMENTS] Zoho criteria: {criteria}")
-    logger.info(f"[PAYMENTS] Date window: {window_start} to {window_end} (today={today})")
-    records = zoho_search("Koh_Chang_Orders", criteria, fields=ORDER_FIELDS)
-    logger.info(f"[PAYMENTS] Fetched {len(records)} orders from Zoho")
+    # Fetch all records via paginated GET — Zoho /search doesn't support
+    # not_equal on Pick List fields or greater_equal on Date fields.
+    # All filtering done in Python.
+    logger.info(f"[PAYMENTS] Fetching all Koh_Chang_Orders records...")
+    records = zoho_get_records("Koh_Chang_Orders", fields=ORDER_FIELDS)
+    logger.info(f"[PAYMENTS] Fetched {len(records)} total records from Zoho")
 
-    # Filter out Cancelled and already-Paid in Python
-    before_filter = len(records)
-    records = [
-        r for r in records
-        if (r.get("Status") or "").strip() != "Cancelled"
-        and (r.get("Provider_Payment_Status") or "").strip() != "Paid"
-    ]
+    # Filter: date window, not cancelled, not paid
+    filtered = []
+    for r in records:
+        tour_date = _parse_tour_date(r)
+        if not tour_date:
+            continue
+        if not (window_start <= tour_date <= window_end):
+            continue
+        status = (r.get("Status") or "").strip()
+        if status == "Cancelled":
+            continue
+        pps = (r.get("Provider_Payment_Status") or "").strip()
+        if pps == "Paid":
+            continue
+        filtered.append(r)
+
     logger.info(
-        f"[PAYMENTS] {before_filter} total → {len(records)} after excluding Cancelled/Paid"
+        f"[PAYMENTS] {len(records)} total → {len(filtered)} after "
+        f"date window ({window_start} to {window_end}), excluding Cancelled/Paid"
     )
+    records = filtered
 
     # Filter to Tour BU package types only
     filtered = []
