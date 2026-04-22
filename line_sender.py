@@ -8,8 +8,10 @@ PA_LINE_TOKEN = os.environ.get("PA_LINE_TOKEN", "")
 PA_LINE_USER_ID = os.environ.get("PA_LINE_USER_ID", "")
 
 
-def send_line_message(message: str) -> tuple:
-    """Send via PA LINE OA push message. Returns (status_code, response_text)."""
+def send_line_message(message: str, group_id: str = None) -> tuple:
+    """Send via PA LINE OA push message. Returns (status_code, response_text).
+    If group_id is provided, sends to that group instead of default PA_LINE_USER_ID.
+    """
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Authorization": f"Bearer {PA_LINE_TOKEN}",
@@ -19,7 +21,7 @@ def send_line_message(message: str) -> tuple:
         message = message[:4900] + "\n\n... (ตัดข้อความเพราะยาวเกินไป)"
 
     payload = {
-        "to": PA_LINE_USER_ID,
+        "to": group_id or PA_LINE_USER_ID,
         "messages": [{"type": "text", "text": message}]
     }
     try:
