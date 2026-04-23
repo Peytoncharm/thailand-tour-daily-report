@@ -39,6 +39,43 @@ def _push_line_location(message):
         return 500
 
 
+@driver_bp.route("/driver/debug", methods=["GET"])
+def driver_debug():
+    """Debug endpoint: verify LINE token identity and group push ability."""
+    import json as _json
+    info = {}
+
+    # Check which bot this token belongs to
+    token_prefix = TRANSFER_LINE_TOKEN[:8] if TRANSFER_LINE_TOKEN else "(empty)"
+    info["token_prefix"] = token_prefix
+    info["group_id"] = TRANSFER_LINE_GROUP_ID
+
+    try:
+        bot_res = requests.get(
+            "https://api.line.me/v2/bot/info",
+            headers={"Authorization": f"Bearer {TRANSFER_LINE_TOKEN}"},
+            timeout=10
+        )
+        info["bot_info_status"] = bot_res.status_code
+        info["bot_info"] = bot_res.json() if bot_res.status_code == 200 else bot_res.text
+    except Exception as e:
+        info["bot_info_error"] = str(e)
+
+    # Check group membership
+    try:
+        group_res = requests.get(
+            f"https://api.line.me/v2/bot/group/{TRANSFER_LINE_GROUP_ID}/summary",
+            headers={"Authorization": f"Bearer {TRANSFER_LINE_TOKEN}"},
+            timeout=10
+        )
+        info["group_summary_status"] = group_res.status_code
+        info["group_summary"] = group_res.json() if group_res.status_code == 200 else group_res.text
+    except Exception as e:
+        info["group_summary_error"] = str(e)
+
+    return jsonify(info), 200
+
+
 @driver_bp.route("/driver/loc/<token>", methods=["GET"])
 def driver_page(token):
     """Serve the location-sharing page."""
