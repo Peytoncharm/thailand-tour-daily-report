@@ -22,10 +22,15 @@ def _push_line_location(message):
         "to": TRANSFER_LINE_GROUP_ID,
         "messages": [{"type": "text", "text": message}]
     }
+    token_prefix = TRANSFER_LINE_TOKEN[:8] if TRANSFER_LINE_TOKEN else "(empty)"
+    logger.info(f"[DRIVER-LOC] Pushing to group={TRANSFER_LINE_GROUP_ID}, token_prefix={token_prefix}...")
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=15)
         if res.status_code != 200:
-            logger.error(f"[DRIVER-LOC] LINE push error {res.status_code}: {res.text}")
+            logger.error(
+                f"[DRIVER-LOC] LINE push error {res.status_code}: {res.text} "
+                f"| group={TRANSFER_LINE_GROUP_ID} | token_prefix={token_prefix}"
+            )
         else:
             logger.info("[DRIVER-LOC] LINE push OK")
         return res.status_code
