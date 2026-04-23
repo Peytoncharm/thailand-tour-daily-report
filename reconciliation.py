@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
-from zoho_thailand import zoho_search
+from zoho_thailand import zoho_search, zoho_get_records
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +24,24 @@ PAYMENT_ICONS = {
 
 def fetch_today_orders() -> list:
     """Fetch Koh Chang Orders modified today with target statuses."""
-    status_csv = ",".join(REPORT_STATUSES)
-    criteria = (
-        f"((Modified_Time:equals:today)"
-        f"and(Status:in:{status_csv}))"
-    )
-    logger.info(f"[RECON] Criteria: {criteria}")
-    records = zoho_search("Koh_Chang_Orders", criteria, fields=FIELDS)
-    logger.info(f"[RECON] Found {len(records)} orders modified today")
-    return records
+    today_str = datetime.now(ICT).strftime("%Y-%m-%d")
+    logger.info(f"[RECON] Fetching all records, filtering Modified_Time={today_str} and Status in {REPORT_STATUSES}")
+
+    records = zoho_get_records("Koh_Chang_Orders", fields=FIELDS)
+    logger.info(f"[RECON] Fetched {len(records)} total records from Zoho")
+
+    filtered = []
+    for r in records:
+        mod_time = r.get("Modified_Time") or ""
+        if not mod_time.startswith(today_str):
+            continue
+        status = (r.get("Status") or "").strip()
+        if status not in REPORT_STATUSES:
+            continue
+        filtered.append(r)
+
+    logger.info(f"[RECON] {len(filtered)} orders modified today with target statuses")
+    return filtered
 
 
 def _fmt_amount(val) -> str:
