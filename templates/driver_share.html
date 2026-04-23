@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Share Location</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f0f2f5; }
+  .header {
+    background: white;
+    padding: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    text-align: center;
+  }
+  .header h2 { font-size: 16px; color: #333; margin-bottom: 8px; }
+  .booking-info {
+    font-size: 13px; color: #666; line-height: 1.5;
+  }
+  #map { width: 100%; height: 50vh; }
+  .status-bar {
+    background: white;
+    padding: 16px;
+    text-align: center;
+  }
+  .status-icon { font-size: 32px; margin-bottom: 8px; }
+  .status-text { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  .status-detail { font-size: 13px; color: #888; margin-bottom: 12px; }
+  .btn-stop {
+    background: #e53935;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 14px 32px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    max-width: 300px;
+  }
+  .btn-stop:active { background: #c62828; }
+  .btn-stop.stopped { background: #9e9e9e; }
+  .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid #e0e0e0; border-top-color: #4CAF50;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h2>&#x1f4cd; &#xe41;&#xe0a;&#xe23;&#xe4c;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;</h2>
+  <div class="booking-info" id="bookingInfo"></div>
+</div>
+
+<div id="map"></div>
+
+<div class="status-bar">
+  <div id="statusLoading">
+    <div class="spinner"></div>
+    <div class="status-text">&#xe01;&#xe33;&#xe25;&#xe31;&#xe07;&#xe02;&#xe2d;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07; GPS...</div>
+    <div class="status-detail">&#xe01;&#xe23;&#xe38;&#xe13;&#xe32;&#xe2d;&#xe19;&#xe38;&#xe0d;&#xe32;&#xe15;&#xe01;&#xe32;&#xe23;&#xe40;&#xe02;&#xe49;&#xe32;&#xe16;&#xe36;&#xe07;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;</div>
+  </div>
+  <div id="statusActive" style="display:none">
+    <div class="status-icon">&#x1f7e2;</div>
+    <div class="status-text">&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe2d;&#xe22;&#xe39;&#xe48; &#x2014; &#xe17;&#xe35;&#xe21;&#xe40;&#xe2b;&#xe47;&#xe19;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;&#xe02;&#xe2d;&#xe07;&#xe04;&#xe38;&#xe13;</div>
+    <div class="status-detail" id="lastUpdate"></div>
+    <button class="btn-stop" id="btnStop" onclick="stopSharing()">&#x1f534; &#xe2b;&#xe22;&#xe38;&#xe14;&#xe41;&#xe0a;&#xe23;&#xe4c;</button>
+  </div>
+  <div id="statusStopped" style="display:none">
+    <div class="status-icon">&#x2705;</div>
+    <div class="status-text">&#xe2b;&#xe22;&#xe38;&#xe14;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe41;&#xe25;&#xe49;&#xe27;</div>
+    <div class="status-detail">&#xe04;&#xe38;&#xe13;&#xe2a;&#xe32;&#xe21;&#xe32;&#xe23;&#xe16;&#xe1b;&#xe34;&#xe14;&#xe2b;&#xe19;&#xe49;&#xe32;&#xe19;&#xe35;&#xe49;&#xe44;&#xe14;&#xe49;</div>
+  </div>
+  <div id="statusError" style="display:none">
+    <div class="status-icon">&#x274c;</div>
+    <div class="status-text" id="errorText"></div>
+    <div class="status-detail" id="errorDetail"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var UUID = "{{ uuid }}";
+var UPDATE_URL = "/driver/track/" + UUID + "/update";
+var STOP_URL = "/driver/track/" + UUID + "/stop";
+var map, marker, watchId, updateInterval;
+var sharing = true;
+
+// Booking info
+var params = new URLSearchParams(window.location.search);
+var infoEl = document.getElementById('bookingInfo');
+var parts = [];
+if ("{{ name }}") parts.push("&#x1f464; " + "{{ name }}");
+if ("{{ pickup }}") parts.push("&#x1f4cd; " + "{{ pickup }}");
+if ("{{ time }}") parts.push("&#x23f0; " + "{{ time }}");
+infoEl.innerHTML = parts.join(" &nbsp;|&nbsp; ") || "Transfer booking";
+
+// Init map
+map = L.map('map').setView([12.08, 102.30], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap',
+  maxZoom: 19
+}).addTo(map);
+
+var driverIcon = L.divIcon({
+  html: '<div style="font-size:28px">&#x1f697;</div>',
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
+  className: ''
+});
+
+function showStatus(id) {
+  ['statusLoading','statusActive','statusStopped','statusError'].forEach(function(s) {
+    document.getElementById(s).style.display = s === id ? 'block' : 'none';
+  });
+}
+
+function sendUpdate(lat, lng, accuracy) {
+  fetch(UPDATE_URL, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({lat: lat, lng: lng, accuracy: accuracy})
+  }).then(function(r) { return r.json(); }).then(function(j) {
+    if (j.updated_at) {
+      document.getElementById('lastUpdate').textContent =
+        "Updated: " + j.updated_at.split('T')[1];
+    }
+  }).catch(function(e) {
+    console.error('Update failed:', e);
+  });
+}
+
+function onPosition(pos) {
+  var lat = pos.coords.latitude;
+  var lng = pos.coords.longitude;
+  var acc = pos.coords.accuracy;
+
+  if (!marker) {
+    marker = L.marker([lat, lng], {icon: driverIcon}).addTo(map);
+    map.setView([lat, lng], 16);
+  } else {
+    marker.setLatLng([lat, lng]);
+  }
+
+  showStatus('statusActive');
+  sendUpdate(lat, lng, acc);
+}
+
+function onError(err) {
+  var msg = 'GPS error';
+  var detail = 'Please try again';
+  if (err.code === 1) { msg = 'GPS ถูกปฏิเสธ'; detail = 'กรุณาอนุญาตการเข้าถึงตำแหน่งในการตั้งค่าเบราว์เซอร์'; }
+  if (err.code === 2) { msg = 'GPS ไม่พร้อมใช้งาน'; detail = 'กรุณาลองใหม่ในที่โล่ง'; }
+  if (err.code === 3) { msg = 'GPS timeout'; detail = 'กรุณาลองใหม่'; }
+  document.getElementById('errorText').textContent = msg;
+  document.getElementById('errorDetail').textContent = detail;
+  showStatus('statusError');
+}
+
+function stopSharing() {
+  sharing = false;
+  if (watchId) navigator.geolocation.clearWatch(watchId);
+  if (updateInterval) clearInterval(updateInterval);
+  fetch(STOP_URL, {method: 'POST'});
+  showStatus('statusStopped');
+}
+
+// Start GPS watch
+if (navigator.geolocation) {
+  watchId = navigator.geolocation.watchPosition(onPosition, onError, {
+    enableHighAccuracy: true,
+    timeout: 20000,
+    maximumAge: 0
+  });
+  // Also send periodic updates every 60s using last known position
+  updateInterval = setInterval(function() {
+    if (!sharing || !marker) return;
+    var ll = marker.getLatLng();
+    sendUpdate(ll.lat, ll.lng, null);
+  }, 60000);
+} else {
+  document.getElementById('errorText').textContent = 'เบราว์เซอร์ไม่รองรับ GPS';
+  document.getElementById('errorDetail').textContent = 'กรุณาใช้เบราว์เซอร์ที่ใหม่กว่า';
+  showStatus('statusError');
+}
+</script>
+</body>
+</html>

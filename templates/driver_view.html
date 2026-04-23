@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Driver Location</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f0f2f5; }
+  .header {
+    background: white;
+    padding: 12px 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .header-left h2 { font-size: 15px; color: #333; }
+  .header-left .info { font-size: 12px; color: #888; margin-top: 2px; }
+  .badge {
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .badge.active { background: #e8f5e9; color: #2e7d32; }
+  .badge.waiting { background: #fff3e0; color: #e65100; }
+  .badge.stopped { background: #eeeeee; color: #616161; }
+  #map { width: 100%; height: calc(100vh - 60px); }
+  .overlay {
+    position: absolute;
+    top: 80px; left: 50%;
+    transform: translateX(-50%);
+    background: white;
+    padding: 20px 28px;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    text-align: center;
+    z-index: 1000;
+    font-size: 15px;
+    color: #555;
+  }
+  .overlay .icon { font-size: 36px; margin-bottom: 8px; }
+  .update-time {
+    position: absolute;
+    bottom: 20px; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255,255,255,0.95);
+    padding: 6px 14px;
+    border-radius: 16px;
+    font-size: 12px;
+    color: #666;
+    z-index: 1000;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h2>&#x1f697; <span id="headerName">{{ name or 'Driver' }}</span></h2>
+    <div class="info" id="headerInfo"></div>
+  </div>
+  <div class="badge waiting" id="statusBadge">Waiting...</div>
+</div>
+
+<div id="map"></div>
+
+<div class="overlay" id="waitingOverlay">
+  <div class="icon">&#x23f3;</div>
+  <div>&#xe23;&#xe2d;&#xe04;&#xe19;&#xe02;&#xe31;&#xe1a;&#xe40;&#xe1b;&#xe34;&#xe14;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;...</div>
+</div>
+
+<div class="update-time" id="updateTime" style="display:none"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var UUID = "{{ uuid }}";
+var STATUS_URL = "/driver/track/" + UUID + "/status";
+var map, marker, firstLoad = true;
+
+// Header info
+var infoParts = [];
+if ("{{ pickup }}") infoParts.push("Pickup: {{ pickup }}");
+if ("{{ time }}") infoParts.push("{{ time }}");
+document.getElementById('headerInfo').textContent = infoParts.join(" | ");
+
+// Init map
+map = L.map('map').setView([12.08, 102.30], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap',
+  maxZoom: 19
+}).addTo(map);
+
+var driverIcon = L.divIcon({
+  html: '<div style="font-size:32px">&#x1f697;</div>',
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+  className: ''
+});
+
+function poll() {
+  fetch(STATUS_URL)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var badge = document.getElementById('statusBadge');
+      var overlay = document.getElementById('waitingOverlay');
+      var timeEl = document.getElementById('updateTime');
+
+      if (data.status === 'waiting') {
+        badge.className = 'badge waiting';
+        badge.textContent = 'Waiting...';
+        overlay.style.display = 'block';
+        return;
+      }
+
+      overlay.style.display = 'none';
+
+      if (data.active) {
+        badge.className = 'badge active';
+        badge.textContent = 'Live';
+      } else {
+        badge.className = 'badge stopped';
+        badge.textContent = 'Stopped';
+      }
+
+      if (data.lat && data.lng) {
+        var lat = data.lat;
+        var lng = data.lng;
+
+        if (!marker) {
+          marker = L.marker([lat, lng], {icon: driverIcon}).addTo(map);
+          map.setView([lat, lng], 16);
+        } else {
+          marker.setLatLng([lat, lng]);
+          if (firstLoad) { map.setView([lat, lng], 16); firstLoad = false; }
+        }
+
+        if (data.updated_at) {
+          var t = data.updated_at.split('T')[1] || data.updated_at;
+          timeEl.textContent = 'Updated: ' + t;
+          timeEl.style.display = 'block';
+        }
+      }
+    })
+    .catch(function(e) { console.error('Poll error:', e); });
+}
+
+// Poll every 10 seconds
+poll();
+setInterval(poll, 10000);
+</script>
+</body>
+</html>

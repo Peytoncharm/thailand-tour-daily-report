@@ -1,54 +1,35 @@
 import os
 import logging
 import requests
+from datetime import datetime, timezone, timedelta
 from flask import Blueprint, request, jsonify, render_template
 
 logger = logging.getLogger(__name__)
 
 driver_bp = Blueprint("driver", __name__)
 
+ICT = timezone(timedelta(hours=7))
+
+# In-memory tracking sessions: {uuid: {lat, lng, accuracy, updated_at, name, pickup, time, active}}
+tracking_sessions = {}
+
+# LINE debug config (kept for /driver/debug endpoint)
 TRANSFER_LINE_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
 TRANSFER_LINE_GROUP_ID = "C03b8de018aa2076157d032bc9b0ae279"
 
 
-def _push_line_location(message):
-    """Push a text message to the Transfer LINE group."""
-    url = "https://api.line.me/v2/bot/message/push"
-    headers = {
-        "Authorization": f"Bearer {TRANSFER_LINE_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "to": TRANSFER_LINE_GROUP_ID,
-        "messages": [{"type": "text", "text": message}]
-    }
-    token_prefix = TRANSFER_LINE_TOKEN[:8] if TRANSFER_LINE_TOKEN else "(empty)"
-    logger.info(f"[DRIVER-LOC] Pushing to group={TRANSFER_LINE_GROUP_ID}, token_prefix={token_prefix}...")
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=15)
-        if res.status_code != 200:
-            logger.error(
-                f"[DRIVER-LOC] LINE push error {res.status_code}: {res.text} "
-                f"| group={TRANSFER_LINE_GROUP_ID} | token_prefix={token_prefix}"
-            )
-        else:
-            logger.info("[DRIVER-LOC] LINE push OK")
-        return res.status_code
-    except Exception as e:
-        logger.error(f"[DRIVER-LOC] LINE push exception: {e}")
-        return 500
-
+# ---------------------------------------------------------------------------
+# Debug endpoint (kept from previous version)
+# ---------------------------------------------------------------------------
 
 @driver_bp.route("/driver/debug", methods=["GET"])
 def driver_debug():
     """Debug endpoint: verify LINE token identity and group push ability."""
-    import json as _json
     info = {}
-
-    # Check which bot this token belongs to
     token_prefix = TRANSFER_LINE_TOKEN[:8] if TRANSFER_LINE_TOKEN else "(empty)"
     info["token_prefix"] = token_prefix
     info["group_id"] = TRANSFER_LINE_GROUP_ID
+    info["active_sessions"] = len([s for s in tracking_sessions.values() if s.get("active")])
 
     try:
         bot_res = requests.get(
@@ -61,7 +42,6 @@ def driver_debug():
     except Exception as e:
         info["bot_info_error"] = str(e)
 
-    # Check group membership
     try:
         group_res = requests.get(
             f"https://api.line.me/v2/bot/group/{TRANSFER_LINE_GROUP_ID}/summary",
@@ -76,45 +56,130 @@ def driver_debug():
     return jsonify(info), 200
 
 
-@driver_bp.route("/driver/loc/<token>", methods=["GET"])
-def driver_page(token):
-    """Serve the location-sharing page."""
-    return render_template("driver_location.html", token=token)
+# ---------------------------------------------------------------------------
+# Driver tracking — share page (driver opens this)
+# ---------------------------------------------------------------------------
+
+@driver_bp.route("/driver/track/<uuid>", methods=["GET"])
+def driver_share_page(uuid):
+    """Serve the driver's location-sharing page."""
+    name = request.args.get("name", "")
+    pickup = request.args.get("pickup", "")
+    time_str = request.args.get("time", "")
+
+    # Create session on first visit if it doesn't exist
+    if uuid not in tracking_sessions:
+        tracking_sessions[uuid] = {
+            "lat": None,
+            "lng": None,
+            "accuracy": None,
+            "updated_at": None,
+            "name": name,
+            "pickup": pickup,
+            "time": time_str,
+            "active": True,
+        }
+        logger.info(f"[DRIVER-TRACK] Session created: uuid={uuid}, name={name}, pickup={pickup}")
+    else:
+        # Update booking info if provided (in case of re-open with params)
+        if name:
+            tracking_sessions[uuid]["name"] = name
+        if pickup:
+            tracking_sessions[uuid]["pickup"] = pickup
+        if time_str:
+            tracking_sessions[uuid]["time"] = time_str
+        # Re-activate if driver re-opens
+        tracking_sessions[uuid]["active"] = True
+        logger.info(f"[DRIVER-TRACK] Session re-opened: uuid={uuid}")
+
+    return render_template("driver_share.html", uuid=uuid, name=name, pickup=pickup, time=time_str)
 
 
-@driver_bp.route("/driver/loc/<token>", methods=["POST"])
-def driver_submit(token):
-    """Receive GPS coordinates and push to LINE."""
+# ---------------------------------------------------------------------------
+# Driver tracking — GPS updates from driver's browser
+# ---------------------------------------------------------------------------
+
+@driver_bp.route("/driver/track/<uuid>/update", methods=["POST"])
+def driver_update(uuid):
+    """Receive GPS coordinates from driver's browser."""
     data = request.get_json(silent=True)
     if not data or "lat" not in data or "lng" not in data:
         return jsonify({"status": "error", "message": "Missing lat/lng"}), 400
 
-    lat = data["lat"]
-    lng = data["lng"]
-    accuracy = data.get("accuracy", "")
-    name = data.get("name", "")
-    pickup = data.get("pickup", "")
-    time_str = data.get("time", "")
+    if uuid not in tracking_sessions:
+        tracking_sessions[uuid] = {
+            "name": "", "pickup": "", "time": "", "active": True
+        }
 
-    maps_url = f"https://maps.google.com/maps?q={lat},{lng}"
+    session = tracking_sessions[uuid]
+    if not session.get("active"):
+        return jsonify({"status": "stopped", "message": "Session stopped"}), 200
 
-    # Build LINE message
-    lines = ["\U0001f4cd \u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07\u0e04\u0e19\u0e02\u0e31\u0e1a"]
-    if name:
-        lines.append(f"\U0001f464 \u0e25\u0e39\u0e01\u0e04\u0e49\u0e32: {name}")
-    if pickup:
-        lines.append(f"\U0001f4cd Pickup: {pickup}")
-    if time_str:
-        lines.append(f"\u23f0 Time: {time_str}")
-    if accuracy:
-        lines.append(f"\U0001f3af Accuracy: {int(float(accuracy))}m")
-    lines.append(maps_url)
+    now = datetime.now(ICT).strftime("%Y-%m-%dT%H:%M:%S")
+    session["lat"] = data["lat"]
+    session["lng"] = data["lng"]
+    session["accuracy"] = data.get("accuracy")
+    session["updated_at"] = now
 
-    message = "\n".join(lines)
-    status_code = _push_line_location(message)
+    logger.info(
+        f"[DRIVER-TRACK] Update: uuid={uuid}, "
+        f"lat={data['lat']:.6f}, lng={data['lng']:.6f}, "
+        f"accuracy={data.get('accuracy', '?')}m"
+    )
 
-    if status_code == 200:
-        logger.info(f"[DRIVER-LOC] Token={token}, lat={lat}, lng={lng}, name={name}")
-        return jsonify({"status": "ok", "maps_url": maps_url}), 200
-    else:
-        return jsonify({"status": "error", "message": "LINE push failed"}), 502
+    return jsonify({"status": "ok", "updated_at": now}), 200
+
+
+# ---------------------------------------------------------------------------
+# Driver tracking — stop sharing
+# ---------------------------------------------------------------------------
+
+@driver_bp.route("/driver/track/<uuid>/stop", methods=["POST"])
+def driver_stop(uuid):
+    """Driver stops sharing location."""
+    if uuid in tracking_sessions:
+        tracking_sessions[uuid]["active"] = False
+        logger.info(f"[DRIVER-TRACK] Stopped: uuid={uuid}")
+    return jsonify({"status": "stopped"}), 200
+
+
+# ---------------------------------------------------------------------------
+# Team viewer — watch driver's location
+# ---------------------------------------------------------------------------
+
+@driver_bp.route("/driver/track/<uuid>/view", methods=["GET"])
+def team_view_page(uuid):
+    """Serve the team's viewer page showing driver location on map."""
+    session = tracking_sessions.get(uuid, {})
+    name = session.get("name", "")
+    pickup = session.get("pickup", "")
+    time_str = session.get("time", "")
+    return render_template("driver_view.html", uuid=uuid, name=name, pickup=pickup, time=time_str)
+
+
+# ---------------------------------------------------------------------------
+# Team viewer — JSON status endpoint (polled by viewer page)
+# ---------------------------------------------------------------------------
+
+@driver_bp.route("/driver/track/<uuid>/status", methods=["GET"])
+def driver_status(uuid):
+    """Return current driver location as JSON (polled by viewer page)."""
+    session = tracking_sessions.get(uuid)
+    if not session or session.get("lat") is None:
+        return jsonify({
+            "status": "waiting",
+            "message": "Driver has not shared location yet",
+            "active": session.get("active", False) if session else False
+        }), 200
+
+    return jsonify({
+        "status": "ok",
+        "lat": session["lat"],
+        "lng": session["lng"],
+        "accuracy": session.get("accuracy"),
+        "updated_at": session.get("updated_at"),
+        "active": session.get("active", False),
+        "name": session.get("name", ""),
+        "pickup": session.get("pickup", ""),
+        "time": session.get("time", ""),
+    }), 200
