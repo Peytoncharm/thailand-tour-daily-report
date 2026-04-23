@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+from driver_location import driver_bp
+app.register_blueprint(driver_bp)
+
 
 @app.route("/", methods=["GET"])
 def health():
