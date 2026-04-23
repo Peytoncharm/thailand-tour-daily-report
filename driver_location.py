@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 driver_bp = Blueprint("driver", __name__)
 
 TRANSFER_LINE_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
-TRANSFER_LINE_GROUP_ID = "C9ff8de09378cba9f1a8a53a04b707a0a"
+TRANSFER_LINE_GROUP_ID = "C03b8de018aa2076157d032bc9b0ae279"
 
 
 def _push_line_location(message):
