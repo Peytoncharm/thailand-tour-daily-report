@@ -12,7 +12,7 @@ TOUR_PACKAGE_TYPES = {"Individual Activity", "Package Activity"}
 ORDER_FIELDS = (
     "Name,Last_Name,Tour_Date,Type_of_Package,Package,"
     "Number_of_People,Net_Cost,Provider_List,"
-    "Provider_Payment_Status,Status"
+    "Provider_Payment_Status,Status,Created_Time"
 )
 
 PROVIDER_FIELDS = (
@@ -21,19 +21,43 @@ PROVIDER_FIELDS = (
 )
 
 
-def compute_due_date(tour_date, payment_trigger, days_offset):
-    """Calculate payment due date from tour date and provider terms."""
+CREATED_DATE_PROVIDERS = {"koh chang express"}
+
+
+def _parse_created_date(record):
+    """Parse Created_Time field to date object. Returns None on failure."""
+    raw = record.get("Created_Time") or ""
+    if not raw:
+        return None
+    try:
+        if "T" in raw:
+            raw = raw.split("T")[0]
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        logger.warning(f"[PAYMENTS] Unparseable Created_Time: {raw!r}")
+        return None
+
+
+def compute_due_date(tour_date, payment_trigger, days_offset, created_date=None, provider_name=""):
+    """Calculate payment due date from base date and provider terms.
+    Koh Chang Express uses booking created date instead of tour date.
+    """
+    if provider_name.lower().strip() in CREATED_DATE_PROVIDERS and created_date:
+        base_date = created_date
+    else:
+        base_date = tour_date
+
     if not payment_trigger or payment_trigger == "-None-":
-        return tour_date
+        return base_date
     offset = abs(int(days_offset or 0))
     if payment_trigger == "Before Tour":
-        return tour_date - timedelta(days=offset)
+        return base_date - timedelta(days=offset)
     elif payment_trigger == "On Tour Date":
-        return tour_date
+        return base_date
     elif payment_trigger == "After Tour":
-        return tour_date + timedelta(days=offset)
-    logger.warning(f"[PAYMENTS] Unknown Payment_Trigger: {payment_trigger!r}, defaulting to tour date")
-    return tour_date
+        return base_date + timedelta(days=offset)
+    logger.warning(f"[PAYMENTS] Unknown Payment_Trigger: {payment_trigger!r}, defaulting to base date")
+    return base_date
 
 
 def fetch_unpaid_orders(today):
@@ -147,6 +171,7 @@ def compute_due_today(orders, providers, today):
 
         prov_name = _provider_name(order)
         provider = providers.get(prov_name, {})
+        created_date = _parse_created_date(order)
 
         payment_trigger = provider.get("Payment_Trigger", "")
         days_offset = provider.get("Days_Offset", 0)
@@ -154,10 +179,11 @@ def compute_due_today(orders, providers, today):
         if not payment_trigger or payment_trigger == "-None-":
             logger.warning(
                 f"[PAYMENTS] No Payment_Trigger for provider {prov_name!r}, "
-                f"defaulting to tour date"
+                f"defaulting to base date"
             )
 
-        due_date = compute_due_date(tour_date, payment_trigger, days_offset)
+        due_date = compute_due_date(tour_date, payment_trigger, days_offset,
+                                    created_date=created_date, provider_name=prov_name)
         if due_date == today:
             due.append(order)
 
@@ -175,11 +201,13 @@ def compute_overdue(orders, providers, today):
 
         prov_name = _provider_name(order)
         provider = providers.get(prov_name, {})
+        created_date = _parse_created_date(order)
 
         payment_trigger = provider.get("Payment_Trigger", "")
         days_offset = provider.get("Days_Offset", 0)
 
-        due_date = compute_due_date(tour_date, payment_trigger, days_offset)
+        due_date = compute_due_date(tour_date, payment_trigger, days_offset,
+                                    created_date=created_date, provider_name=prov_name)
         if due_date < today:
             order["_days_overdue"] = (today - due_date).days
             overdue.append(order)
