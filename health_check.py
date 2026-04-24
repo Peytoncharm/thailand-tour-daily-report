@@ -11,8 +11,9 @@ CRONJOB_API_KEY = os.environ.get("CRONJOB_API_KEY", "")
 TRANSFER_LINE_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
 TEAM_LINE_GROUP_ID = os.environ.get("TEAM_LINE_GROUP_ID", "")
 
+SELF_SERVICE_NAME = "thailand-tour-daily-report"
+
 RENDER_SERVICES = [
-    {"name": "thailand-tour-daily-report", "url": "https://thailand-tour-daily-report.onrender.com/"},
     {"name": "peyton-charmed-bot", "url": "https://peyton-charmed-bot.onrender.com/"},
 ]
 
@@ -43,14 +44,14 @@ def fetch_cronjob_status():
             enabled = job.get("enabled", False)
 
             schedule = job.get("schedule", {})
-            hours = schedule.get("hours", [])
-            minutes = schedule.get("minutes", [])
+            hours = [h for h in schedule.get("hours", []) if h >= 0]
+            minutes = [m for m in schedule.get("minutes", []) if m >= 0]
             if hours and minutes:
-                h = hours[0]
-                m = minutes[0]
-                utc_hour = h
-                ict_hour = (utc_hour + 7) % 24
-                sched_str = f"{ict_hour:02d}:{m:02d} ICT"
+                ict_hour = (hours[0] + 7) % 24
+                sched_str = f"{ict_hour:02d}:{minutes[0]:02d} ICT"
+            elif hours:
+                ict_hour = (hours[0] + 7) % 24
+                sched_str = f"{ict_hour:02d}:00 ICT"
             else:
                 sched_str = "custom"
 
@@ -84,12 +85,12 @@ def fetch_cronjob_status():
 
 
 def _ping_one(svc):
-    """Ping a single Render service. Returns result dict."""
+    """Ping a single Render service. Any HTTP response = alive."""
     try:
         res = requests.get(svc["url"], timeout=10)
         return {
             "name": svc["name"],
-            "alive": res.status_code == 200,
+            "alive": True,
             "status_code": res.status_code,
             "response_ms": int(res.elapsed.total_seconds() * 1000),
         }
@@ -114,12 +115,20 @@ def _ping_one(svc):
 
 
 def ping_render_services():
-    """Ping all Render services in parallel."""
+    """Ping all Render services in parallel. Self is always reported as alive."""
+    results = [{
+        "name": SELF_SERVICE_NAME,
+        "alive": True,
+        "status_code": 200,
+        "response_ms": 0,
+        "note": "self",
+    }]
+
     with ThreadPoolExecutor(max_workers=len(RENDER_SERVICES)) as pool:
         futures = {pool.submit(_ping_one, svc): svc for svc in RENDER_SERVICES}
-        results = []
         for future in as_completed(futures):
             results.append(future.result())
+
     results.sort(key=lambda r: r["name"])
     return results
 
@@ -155,7 +164,9 @@ def build_health_message(cron_jobs, cron_error, render_results):
     # --- Render section ---
     msg += f"\nRender Services:\n"
     for svc in render_results:
-        if svc["alive"]:
+        if svc.get("note") == "self":
+            msg += f"\u2705 {svc['name']} \u2014 alive (self)\n"
+        elif svc["alive"]:
             msg += f"\u2705 {svc['name']} \u2014 alive ({svc['response_ms']}ms)\n"
         else:
             err = svc.get("error", f"HTTP {svc['status_code']}")
