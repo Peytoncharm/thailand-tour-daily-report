@@ -69,6 +69,7 @@ def test_reconciliation():
 
 
 PAYMENTS_LINE_GROUP_ID = os.environ.get("PAYMENTS_LINE_GROUP_ID", "")
+TEAM_LINE_GROUP_ID = os.environ.get("TEAM_LINE_GROUP_ID", "")
 
 
 @app.route("/cron/daily-payments", methods=["GET"])
@@ -114,6 +115,48 @@ def test_daily_payments():
         }), 200
     except Exception as e:
         logger.error(f"[TEST] Payments error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/cron/morning-health-check", methods=["GET"])
+def cron_morning_health_check():
+    """Returns 200 immediately, runs health check in background thread."""
+    def _run():
+        try:
+            from health_check import run_health_check, send_health_line
+
+            logger.info("[CRON] Starting morning health check...")
+            message, summary = run_health_check()
+
+            status_code, response_text = send_health_line(message)
+            logger.info(
+                f"[CRON] Health check LINE push status: {status_code}, "
+                f"alerts: {summary['alerts']}, "
+                f"message length: {len(message)}"
+            )
+        except Exception as e:
+            logger.error(f"[CRON] Health check error: {e}", exc_info=True)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"status": "ok", "message": "Morning health check triggered"}), 200
+
+
+@app.route("/test/morning-health-check", methods=["GET"])
+def test_morning_health_check():
+    """Synchronous test endpoint — returns health report without sending to LINE."""
+    try:
+        from health_check import run_health_check
+
+        message, summary = run_health_check()
+
+        return jsonify({
+            "status": "ok",
+            "summary": summary,
+            "message_preview": message,
+            "message_length": len(message)
+        }), 200
+    except Exception as e:
+        logger.error(f"[TEST] Health check error: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
