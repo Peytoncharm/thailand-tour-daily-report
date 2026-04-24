@@ -18,11 +18,12 @@ def _get_recipients():
     return []
 
 
-def _push_one(message: str, to: str) -> tuple:
+def _push_one(message: str, to: str, token: str = None) -> tuple:
     """Push message to a single LINE recipient. Returns (status_code, response_text)."""
+    use_token = token or PA_LINE_TOKEN
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
-        "Authorization": f"Bearer {PA_LINE_TOKEN}",
+        "Authorization": f"Bearer {use_token}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -41,16 +42,17 @@ def _push_one(message: str, to: str) -> tuple:
         return 500, str(e)
 
 
-def send_line_message(message: str, group_id: str = None) -> tuple:
-    """Send via PA LINE OA push message. Returns (status_code, response_text).
+def send_line_message(message: str, group_id: str = None, token: str = None) -> tuple:
+    """Send via LINE OA push message. Returns (status_code, response_text).
     If group_id is provided, sends to that single group.
     Otherwise sends to all recipients in PA_LINE_RECIPIENTS (or PA_LINE_USER_ID fallback).
+    If token is provided, uses that instead of PA_LINE_TOKEN.
     """
     if len(message) > 4900:
         message = message[:4900] + "\n\n... (ตัดข้อความเพราะยาวเกินไป)"
 
     if group_id:
-        return _push_one(message, group_id)
+        return _push_one(message, group_id, token=token)
 
     recipients = _get_recipients()
     if not recipients:
@@ -59,7 +61,7 @@ def send_line_message(message: str, group_id: str = None) -> tuple:
 
     results = []
     for recipient in recipients:
-        status_code, response_text = _push_one(message, recipient)
+        status_code, response_text = _push_one(message, recipient, token=token)
         results.append((recipient, status_code, response_text))
 
     # Return the first failure if any, otherwise last success

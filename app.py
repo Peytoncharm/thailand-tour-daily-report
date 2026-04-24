@@ -69,6 +69,7 @@ def test_reconciliation():
 
 
 PAYMENTS_LINE_GROUP_ID = os.environ.get("PAYMENTS_LINE_GROUP_ID", "")
+KOHCHANG_LINE_TOKEN = os.environ.get("KOHCHANG_LINE_TOKEN", "")
 TEAM_LINE_GROUP_ID = os.environ.get("TEAM_LINE_GROUP_ID", "")
 
 
@@ -83,7 +84,7 @@ def cron_daily_payments():
             logger.info("[CRON] Starting daily payments register...")
             message, stats = run_daily_payments()
 
-            status_code, response_text = send_line_message(message, group_id=PAYMENTS_LINE_GROUP_ID)
+            status_code, response_text = send_line_message(message, group_id=PAYMENTS_LINE_GROUP_ID, token=KOHCHANG_LINE_TOKEN)
             logger.info(
                 f"[CRON] Payments LINE push status: {status_code}, "
                 f"orders_due: {stats['orders_due_today']}, "
