@@ -1,5 +1,6 @@
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -27,7 +28,7 @@ def fetch_cronjob_status():
         res = requests.get(
             "https://api.cron-job.org/jobs",
             headers={"Authorization": f"Bearer {CRONJOB_API_KEY}"},
-            timeout=15,
+            timeout=10,
         )
         if res.status_code != 200:
             return None, f"API returned {res.status_code}"
@@ -82,27 +83,44 @@ def fetch_cronjob_status():
         return None, str(e)
 
 
+def _ping_one(svc):
+    """Ping a single Render service. Returns result dict."""
+    try:
+        res = requests.get(svc["url"], timeout=10)
+        return {
+            "name": svc["name"],
+            "alive": res.status_code == 200,
+            "status_code": res.status_code,
+            "response_ms": int(res.elapsed.total_seconds() * 1000),
+        }
+    except requests.exceptions.Timeout:
+        logger.error(f"[HEALTH] Ping timeout for {svc['name']}")
+        return {
+            "name": svc["name"],
+            "alive": False,
+            "status_code": 0,
+            "response_ms": 0,
+            "error": "timeout",
+        }
+    except Exception as e:
+        logger.error(f"[HEALTH] Ping failed for {svc['name']}: {e}")
+        return {
+            "name": svc["name"],
+            "alive": False,
+            "status_code": 0,
+            "response_ms": 0,
+            "error": str(e),
+        }
+
+
 def ping_render_services():
-    """Ping each Render service and return status."""
-    results = []
-    for svc in RENDER_SERVICES:
-        try:
-            res = requests.get(svc["url"], timeout=30)
-            results.append({
-                "name": svc["name"],
-                "alive": res.status_code == 200,
-                "status_code": res.status_code,
-                "response_ms": int(res.elapsed.total_seconds() * 1000),
-            })
-        except Exception as e:
-            logger.error(f"[HEALTH] Ping failed for {svc['name']}: {e}")
-            results.append({
-                "name": svc["name"],
-                "alive": False,
-                "status_code": 0,
-                "response_ms": 0,
-                "error": str(e),
-            })
+    """Ping all Render services in parallel."""
+    with ThreadPoolExecutor(max_workers=len(RENDER_SERVICES)) as pool:
+        futures = {pool.submit(_ping_one, svc): svc for svc in RENDER_SERVICES}
+        results = []
+        for future in as_completed(futures):
+            results.append(future.result())
+    results.sort(key=lambda r: r["name"])
     return results
 
 
