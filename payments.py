@@ -13,7 +13,8 @@ TOUR_PACKAGE_TYPES = {"Individual Activity", "Package Activity"}
 ORDER_FIELDS = (
     "Name,Last_Name,Tour_Date,Type_of_Package,Package,"
     "Number_of_People,Net_Cost,Provider_List,"
-    "Provider_Payment_Status,Status,Created_Time"
+    "Provider_Payment_Status,Status_Payment_Net_Price_To_Providers,"
+    "Status,Created_Time"
 )
 
 PROVIDER_FIELDS = (
@@ -101,6 +102,9 @@ def fetch_unpaid_orders(today):
             continue
         pps = (r.get("Provider_Payment_Status") or "").strip()
         if pps == "Paid":
+            continue
+        paid_providers = (r.get("Status_Payment_Net_Price_To_Providers") or "").strip()
+        if paid_providers == "Yes":
             continue
         filtered.append(r)
 
