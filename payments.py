@@ -1,4 +1,5 @@
 import logging
+from calendar import monthrange
 from datetime import datetime, timezone, timedelta
 
 from zoho_thailand import zoho_search, zoho_get_records
@@ -21,9 +22,6 @@ PROVIDER_FIELDS = (
 )
 
 
-CREATED_DATE_PROVIDERS = {"koh chang express"}
-
-
 def _parse_created_date(record):
     """Parse Created_Time field to date object. Returns None on failure."""
     raw = record.get("Created_Time") or ""
@@ -39,25 +37,43 @@ def _parse_created_date(record):
 
 
 def compute_due_date(tour_date, payment_trigger, days_offset, created_date=None, provider_name=""):
-    """Calculate payment due date from base date and provider terms.
-    Koh Chang Express uses booking created date instead of tour date.
-    """
-    if provider_name.lower().strip() in CREATED_DATE_PROVIDERS and created_date:
-        base_date = created_date
-    else:
-        base_date = tour_date
+    """Calculate payment due date based on provider's Payment_Trigger pattern.
 
+    Pattern A: "Pay on Booking Date" → due = created_date (order's Created_Time)
+    Pattern B: "Bi-Monthly Cycle"    → due = 15th or last day of tour month
+    Pattern C: "On Tour Date"        → due = tour_date
+    Pattern D: "After Tour"          → due = tour_date + Days_Offset
+    """
     if not payment_trigger or payment_trigger == "-None-":
-        return base_date
-    offset = abs(int(days_offset or 0))
+        logger.warning(f"[PAYMENTS] No Payment_Trigger for provider {provider_name!r}, defaulting to tour_date")
+        return tour_date
+
+    if payment_trigger == "Pay on Booking Date":
+        if created_date:
+            return created_date
+        logger.warning(f"[PAYMENTS] No Created_Time for {provider_name!r}, falling back to tour_date")
+        return tour_date
+
+    if payment_trigger == "Bi-Monthly Cycle":
+        if tour_date.day <= 15:
+            return tour_date.replace(day=15)
+        last_day = monthrange(tour_date.year, tour_date.month)[1]
+        return tour_date.replace(day=last_day)
+
+    if payment_trigger == "On Tour Date":
+        return tour_date
+
+    if payment_trigger == "After Tour":
+        offset = abs(int(days_offset or 0))
+        return tour_date + timedelta(days=offset)
+
     if payment_trigger == "Before Tour":
-        return base_date - timedelta(days=offset)
-    elif payment_trigger == "On Tour Date":
-        return base_date
-    elif payment_trigger == "After Tour":
-        return base_date + timedelta(days=offset)
-    logger.warning(f"[PAYMENTS] Unknown Payment_Trigger: {payment_trigger!r}, defaulting to base date")
-    return base_date
+        logger.warning(f"[PAYMENTS] 'Before Tour' still set for {provider_name!r} — should have been migrated")
+        offset = abs(int(days_offset or 0))
+        return tour_date - timedelta(days=offset)
+
+    logger.warning(f"[PAYMENTS] Unknown Payment_Trigger: {payment_trigger!r} for {provider_name!r}, defaulting to tour_date")
+    return tour_date
 
 
 def fetch_unpaid_orders(today):
