@@ -22,27 +22,25 @@ def health():
 
 @app.route("/cron/daily-reconciliation", methods=["GET"])
 def cron_daily_reconciliation():
-    """Returns 200 immediately, runs reconciliation in background thread."""
-    def _run():
-        try:
-            from reconciliation import fetch_today_orders, build_report, build_empty_report
-            from line_sender import send_line_message
+    """Runs reconciliation synchronously, then returns."""
+    try:
+        from reconciliation import fetch_today_orders, build_report, build_empty_report
+        from line_sender import send_line_message
 
-            logger.info("[CRON] Starting daily reconciliation...")
-            records = fetch_today_orders()
+        logger.info("[CRON] Starting daily reconciliation...")
+        records = fetch_today_orders()
 
-            if records:
-                message = build_report(records)
-            else:
-                message = build_empty_report()
+        if records:
+            message = build_report(records)
+        else:
+            message = build_empty_report()
 
-            status_code, response_text = send_line_message(message)
-            logger.info(f"[CRON] LINE push status: {status_code}, message length: {len(message)}")
-        except Exception as e:
-            logger.error(f"[CRON] Reconciliation error: {e}", exc_info=True)
-
-    threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"status": "ok", "message": "Daily reconciliation triggered"}), 200
+        status_code, response_text = send_line_message(message)
+        logger.info(f"[CRON] LINE push status: {status_code}, message length: {len(message)}")
+        return jsonify({"status": "ok", "message": "Daily reconciliation triggered"}), 200
+    except Exception as e:
+        logger.error(f"[CRON] Reconciliation error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/test/reconciliation", methods=["GET"])
@@ -75,26 +73,24 @@ TEAM_LINE_GROUP_ID = os.environ.get("TEAM_LINE_GROUP_ID", "")
 
 @app.route("/cron/daily-payments", methods=["GET"])
 def cron_daily_payments():
-    """Returns 200 immediately, runs payment register in background thread."""
-    def _run():
-        try:
-            from payments import run_daily_payments
-            from line_sender import send_line_message
+    """Runs payment register synchronously, then returns."""
+    try:
+        from payments import run_daily_payments
+        from line_sender import send_line_message
 
-            logger.info("[CRON] Starting daily payments register...")
-            message, stats = run_daily_payments()
+        logger.info("[CRON] Starting daily payments register...")
+        message, stats = run_daily_payments()
 
-            status_code, response_text = send_line_message(message, group_id=PAYMENTS_LINE_GROUP_ID, token=KOHCHANG_LINE_TOKEN)
-            logger.info(
-                f"[CRON] Payments LINE push status: {status_code}, "
-                f"orders_due: {stats['orders_due_today']}, "
-                f"message length: {len(message)}"
-            )
-        except Exception as e:
-            logger.error(f"[CRON] Payments error: {e}", exc_info=True)
-
-    threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"status": "ok", "message": "Daily payments register triggered"}), 200
+        status_code, response_text = send_line_message(message, group_id=PAYMENTS_LINE_GROUP_ID, token=KOHCHANG_LINE_TOKEN)
+        logger.info(
+            f"[CRON] Payments LINE push status: {status_code}, "
+            f"orders_due: {stats['orders_due_today']}, "
+            f"message length: {len(message)}"
+        )
+        return jsonify({"status": "ok", "message": "Daily payments register triggered"}), 200
+    except Exception as e:
+        logger.error(f"[CRON] Payments error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/test/daily-payments", methods=["GET"])
@@ -121,25 +117,23 @@ def test_daily_payments():
 
 @app.route("/cron/morning-health-check", methods=["GET"])
 def cron_morning_health_check():
-    """Returns 200 immediately, runs health check in background thread."""
-    def _run():
-        try:
-            from health_check import run_health_check, send_health_line
+    """Runs health check synchronously, then returns."""
+    try:
+        from health_check import run_health_check, send_health_line
 
-            logger.info("[CRON] Starting morning health check...")
-            message, summary = run_health_check()
+        logger.info("[CRON] Starting morning health check...")
+        message, summary = run_health_check()
 
-            status_code, response_text = send_health_line(message)
-            logger.info(
-                f"[CRON] Health check LINE push status: {status_code}, "
-                f"alerts: {summary['alerts']}, "
-                f"message length: {len(message)}"
-            )
-        except Exception as e:
-            logger.error(f"[CRON] Health check error: {e}", exc_info=True)
-
-    threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"status": "ok", "message": "Morning health check triggered"}), 200
+        status_code, response_text = send_health_line(message)
+        logger.info(
+            f"[CRON] Health check LINE push status: {status_code}, "
+            f"alerts: {summary['alerts']}, "
+            f"message length: {len(message)}"
+        )
+        return jsonify({"status": "ok", "message": "Morning health check triggered"}), 200
+    except Exception as e:
+        logger.error(f"[CRON] Health check error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/test/morning-health-check", methods=["GET"])
