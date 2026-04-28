@@ -1,8 +1,7 @@
 import os
 import logging
 import threading
-import requests
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,7 +35,9 @@ def cron_daily_reconciliation():
         else:
             message = build_empty_report()
 
-        status_code, response_text = send_line_message(message)
+        status_code, response_text = send_line_message(
+            message, group_id=RECONCILIATION_LINE_GROUP_ID, token=KOHCHANG_LINE_TOKEN
+        )
         logger.info(f"[CRON] LINE push status: {status_code}, message length: {len(message)}")
         return jsonify({"status": "ok", "message": "Daily reconciliation triggered"}), 200
     except Exception as e:
@@ -70,33 +71,7 @@ def test_reconciliation():
 PAYMENTS_LINE_GROUP_ID = os.environ.get("PAYMENTS_LINE_GROUP_ID", "")
 KOHCHANG_LINE_TOKEN = os.environ.get("KOHCHANG_LINE_TOKEN", "")
 TEAM_LINE_GROUP_ID = os.environ.get("TEAM_LINE_GROUP_ID", "")
-
-
-# TEMPORARY — remove after group routing verification
-@app.route("/test/line-push", methods=["GET"])
-def test_line_push():
-    """Temporary: send test message to a LINE group using KOHCHANG_LINE_TOKEN."""
-    group_id = request.args.get("group_id", "")
-    if not group_id:
-        return jsonify({"error": "missing group_id query param"}), 400
-    if not KOHCHANG_LINE_TOKEN:
-        return jsonify({"error": "KOHCHANG_LINE_TOKEN not set"}), 500
-    try:
-        resp = requests.post(
-            "https://api.line.me/v2/bot/message/push",
-            headers={
-                "Authorization": f"Bearer {KOHCHANG_LINE_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "to": group_id,
-                "messages": [{"type": "text", "text": "\U0001f9ea Test from Orathai \u2014 checking group routing for consolidated financial reports. Please ignore."}],
-            },
-            timeout=15,
-        )
-        return jsonify({"status_code": resp.status_code, "body": resp.json() if resp.text else {}}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+RECONCILIATION_LINE_GROUP_ID = os.environ.get("RECONCILIATION_LINE_GROUP_ID", "")
 
 
 @app.route("/cron/daily-payments", methods=["GET"])
