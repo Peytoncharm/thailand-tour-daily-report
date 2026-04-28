@@ -1,7 +1,8 @@
 import os
 import logging
 import threading
-from flask import Flask, jsonify
+import requests
+from flask import Flask, request, jsonify
 
 logging.basicConfig(
     level=logging.INFO,
