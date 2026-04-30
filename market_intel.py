@@ -51,8 +51,7 @@ def _get_sheet_client():
     try:
         sa_info = json.loads(sa_json)
         creds = Credentials.from_service_account_info(sa_info, scopes=[
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
         ])
         gc = gspread.authorize(creds)
         spreadsheet = gc.open_by_key(SHEET_ID)
