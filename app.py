@@ -158,6 +158,129 @@ def test_morning_health_check():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Market Intel Reminder endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/cron/market-intel-reminder", methods=["GET"])
+def cron_market_intel_reminder():
+    """Production trigger — cron-job.org hits Mon-Thu 09:00 ICT."""
+    try:
+        from market_intel import run_market_intel_reminder
+
+        logger.info("[CRON] Starting market intel reminder...")
+        result = run_market_intel_reminder(dry_run=False)
+        logger.info(f"[CRON] Market intel result: {result.get('action')}")
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error(f"[CRON] Market intel error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/market-intel/done", methods=["GET"])
+def market_intel_done():
+    """Completion link — Orathai taps from LINE to mark week done."""
+    from flask import request
+    import re
+
+    week = request.args.get("week", "")
+
+    # Validate format
+    if not re.match(r"^\d{4}-W\d{2}$", week):
+        return _done_html("❌ ลิงก์ไม่ถูกต้อง", "Week format invalid", "#e74c3c"), 400
+
+    try:
+        from market_intel import mark_week_done
+
+        result = mark_week_done(week)
+
+        if result["status"] == "done":
+            return _done_html(
+                "✅ บันทึกแล้ว",
+                f"สัปดาห์ {week} — เรียบร้อย",
+                "#27ae60",
+            ), 200
+        elif result["status"] == "already_done":
+            return _done_html(
+                "✅ บันทึกไว้แล้ว",
+                f"สัปดาห์ {week} — ทำไปแล้วก่อนหน้านี้",
+                "#27ae60",
+            ), 200
+        else:
+            return _done_html(
+                "❌ เกิดข้อผิดพลาด",
+                result.get("message", "Unknown error"),
+                "#e74c3c",
+            ), 500
+    except Exception as e:
+        logger.error(f"[MARKET-INTEL] Done endpoint error: {e}", exc_info=True)
+        return _done_html("❌ เกิดข้อผิดพลาด", str(e), "#e74c3c"), 500
+
+
+def _done_html(title, subtitle, color):
+    """Return mobile-friendly HTML confirmation page."""
+    return f"""<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    background: #f5f5f5;
+  }}
+  .card {{
+    text-align: center;
+    padding: 2rem;
+    max-width: 400px;
+  }}
+  .icon {{ font-size: 3rem; }}
+  .title {{
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: {color};
+    margin: 1rem 0 0.5rem;
+  }}
+  .subtitle {{
+    font-size: 1rem;
+    color: #666;
+  }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">{title[0]}</div>
+  <div class="title">{title[2:].strip()}</div>
+  <div class="subtitle">{subtitle}</div>
+</div>
+</body>
+</html>"""
+
+
+@app.route("/test/market-intel-reminder", methods=["GET"])
+def test_market_intel_reminder():
+    """Test endpoint — dry_run=true by default, dry_run=false sends LINE."""
+    from flask import request
+
+    try:
+        from market_intel import run_market_intel_reminder
+
+        dry_run_param = request.args.get("dry_run", "true").lower()
+        dry_run = dry_run_param != "false"
+
+        result = run_market_intel_reminder(dry_run=dry_run)
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error(f"[TEST] Market intel error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
