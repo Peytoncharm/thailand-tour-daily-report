@@ -110,14 +110,11 @@ def _safe_float(val):
 
 
 def _fmt_amount(val):
-    """Format number as Thai baht string."""
+    """Format number as whole Thai baht string (no decimals)."""
     if val is None:
         return "0"
     try:
-        n = float(val)
-        if n == int(n):
-            return f"{int(n):,}"
-        return f"{n:,.2f}"
+        return f"{round(float(val)):,}"
     except (ValueError, TypeError):
         return "0"
 
@@ -232,29 +229,28 @@ def _compute_top_providers(orders, n=10):
 def _build_bu_section(label, icon, stats):
     """Build message lines for one BU section."""
     lines = [
-        f"\u2501\u2501\u2501\u2501\u2501 {icon} {label} \u2501\u2501\u2501\u2501\u2501",
-        f"\U0001f4cb Bookings: {stats['bookings']}",
+        f"━━━ {icon} {label} ━━━",
+        f"Bookings: {stats['bookings']}",
         "",
-        f"\U0001f4b0 Total Income:      \u0e3f{_fmt_amount(stats['income'])}",
+        f"Income:     ฿{_fmt_amount(stats['income'])}",
     ]
 
     pay = stats["payment"]
     if pay["Cash"]["count"] > 0:
-        lines.append(f"   \U0001f4b5 Cash:           \u0e3f{_fmt_amount(pay['Cash']['total'])} ({pay['Cash']['count']} bookings)")
+        lines.append(f"  Cash:     ฿{_fmt_amount(pay['Cash']['total'])} ({pay['Cash']['count']})")
     if pay["Credit Card"]["count"] > 0:
-        lines.append(f"   \U0001f4b3 Credit Card:    \u0e3f{_fmt_amount(pay['Credit Card']['total'])} ({pay['Credit Card']['count']} bookings)")
+        lines.append(f"  Card:     ฿{_fmt_amount(pay['Credit Card']['total'])} ({pay['Credit Card']['count']})")
     if pay["Mobile Banking"]["count"] > 0:
-        lines.append(f"   \U0001f4f1 Mobile Banking: \u0e3f{_fmt_amount(pay['Mobile Banking']['total'])} ({pay['Mobile Banking']['count']} bookings)")
+        lines.append(f"  Mobile:   ฿{_fmt_amount(pay['Mobile Banking']['total'])} ({pay['Mobile Banking']['count']})")
     if pay["Other"]["count"] > 0:
-        lines.append(f"   \u2753 Other:          \u0e3f{_fmt_amount(pay['Other']['total'])} ({pay['Other']['count']} bookings)")
+        lines.append(f"  Other:    ฿{_fmt_amount(pay['Other']['total'])} ({pay['Other']['count']})")
 
     lines.extend([
         "",
-        f"\U0001f4b8 Provider Cost:     \u0e3f{_fmt_amount(stats['cost'])}",
-        f"\U0001f4ca Gross Profit:      \u0e3f{_fmt_amount(stats['gross_profit'])}",
-        f"\U0001f4b3 OMISE Fees:        \u0e3f{_fmt_amount(stats['omise_fees'])}",
-        f"\U0001f4b5 Net Profit:        \u0e3f{_fmt_amount(stats['net_profit'])}",
-        f"\U0001f4c8 Margin:            {stats['margin']:.1f}%",
+        f"Cost:       ฿{_fmt_amount(stats['cost'])}",
+        f"Profit:     ฿{_fmt_amount(stats['net_profit'])}",
+        f"OMISE:      ฿{_fmt_amount(stats['omise_fees'])}",
+        f"Margin:     {stats['margin']:.1f}%",
     ])
     return lines
 
@@ -277,37 +273,26 @@ def _build_combined_section(tour_stats, transfer_stats):
         combined_pay[method] = {"count": count, "total": total}
 
     lines = [
-        "\u2501\u2501\u2501\u2501\u2501 \U0001f4ca COMBINED \u2501\u2501\u2501\u2501\u2501",
-        f"\U0001f4cb Total Bookings:    {total_bookings}",
+        "━━━ 📊 TOTAL ━━━",
+        f"Bookings: {total_bookings}",
+        f"Income:     ฿{_fmt_amount(total_income)}",
+        f"Cost:       ฿{_fmt_amount(total_cost)}",
+        f"Net Profit: ฿{_fmt_amount(total_net)}",
+        f"Margin:     {total_margin:.1f}%",
         "",
-        f"\U0001f4b0 Total Income:      \u0e3f{_fmt_amount(total_income)}",
     ]
 
-    for method, icon in [("Cash", "\U0001f4b5"), ("Credit Card", "\U0001f4b3"), ("Mobile Banking", "\U0001f4f1")]:
+    # Payment mix summary line
+    pay_parts = []
+    for method, label in [("Cash", "Cash"), ("Credit Card", "Card"), ("Mobile Banking", "Mobile"), ("Other", "Other")]:
         pay = combined_pay[method]
         if pay["count"] > 0:
             pct = (pay["total"] / total_income * 100) if total_income > 0 else 0
-            lines.append(
-                f"   {icon} {method}: \u0e3f{_fmt_amount(pay['total'])} "
-                f"({pct:.0f}%) \u2014 {pay['count']} bookings"
-            )
+            pay_parts.append(f"{label} {pct:.0f}%")
 
-    if combined_pay["Other"]["count"] > 0:
-        pay = combined_pay["Other"]
-        pct = (pay["total"] / total_income * 100) if total_income > 0 else 0
-        lines.append(
-            f"   \u2753 Other: \u0e3f{_fmt_amount(pay['total'])} "
-            f"({pct:.0f}%) \u2014 {pay['count']} bookings"
-        )
+    if pay_parts:
+        lines.append(" | ".join(pay_parts))
 
-    lines.extend([
-        "",
-        f"\U0001f4b8 Total Provider Cost: \u0e3f{_fmt_amount(total_cost)}",
-        f"\U0001f4ca Total Gross Profit:  \u0e3f{_fmt_amount(total_gross)}",
-        f"\U0001f4b3 Total OMISE Fees:    \u0e3f{_fmt_amount(total_omise)}",
-        f"\U0001f4b5 Total Net Profit:    \u0e3f{_fmt_amount(total_net)}",
-        f"\U0001f4c8 Overall Margin:      {total_margin:.1f}%",
-    ])
     return lines
 
 
@@ -315,15 +300,11 @@ def _build_top_providers_section(top_providers):
     """Build top providers section."""
     lines = [
         "",
-        "\u2501\u2501\u2501\u2501\u2501 \U0001f3c6 TOP 10 PROVIDERS (by cost) \u2501\u2501\u2501\u2501\u2501",
+        "━━━ 🏆 TOP PROVIDERS ━━━",
     ]
     for i, p in enumerate(top_providers, 1):
-        lines.append(f"{i}. {p['name']} [{p['icon']}]")
         lines.append(
-            f"   \U0001f4b8 Cost: \u0e3f{_fmt_amount(p['cost'])} | "
-            f"\U0001f4b0 Income: \u0e3f{_fmt_amount(p['income'])} | "
-            f"\U0001f4ca Profit: \u0e3f{_fmt_amount(p['profit'])} | "
-            f"\U0001f4cb {p['bookings']} bookings"
+            f"{i}. {p['name']} {p['icon']} — ฿{_fmt_amount(p['cost'])} ({p['bookings']})"
         )
     return lines
 
@@ -353,17 +334,18 @@ def build_monthly_report(month_str=None):
 
     # Build message
     lines = [
-        f"\U0001f4ca Monthly P&L Report \u2014 {display}",
-        "=" * 40,
+        f"📊 Monthly P&L — {display}",
         "",
     ]
 
     if tour_orders:
-        lines.extend(_build_bu_section("TOUR BU (Activity)", "\U0001f3dd\ufe0f", tour_stats))
+        lines.extend(_build_bu_section("TOUR (Activity)", "🏝️", tour_stats))
+        lines.append("")
         lines.append("")
 
     if transfer_orders:
-        lines.extend(_build_bu_section("TRANSFER BU", "\U0001f690", transfer_stats))
+        lines.extend(_build_bu_section("TRANSFER", "🚐", transfer_stats))
+        lines.append("")
         lines.append("")
 
     lines.extend(_build_combined_section(tour_stats, transfer_stats))
