@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, date
 from calendar import monthrange
 from zoneinfo import ZoneInfo
 
-from zoho_thailand import zoho_coql, zoho_search
+from zoho_thailand import zoho_get_records, zoho_search
 
 logger = logging.getLogger(__name__)
 
@@ -18,54 +18,61 @@ LINE_GROUP = os.environ.get("RECONCILIATION_LINE_GROUP_ID", "")
 # Zoho queries
 # ---------------------------------------------------------------------------
 
-def _fetch_unpaid_orders():
-    """Fetch unpaid orders with providers, Tour_Date >= 60 days ago."""
-    cutoff = (datetime.now(ICT).date() - timedelta(days=60)).strftime("%Y-%m-%d")
-    query = (
-        "SELECT Name, Tour_Date, Type_of_Package, Provider_List, "
-        "Provider_Payment_Status, Net_Cost, Total_Net_Cost_Currency, "
-        "Adults1, Children1, Chanel_of_booking, Created_Time "
-        "FROM Koh_Chang_Orders "
-        f"WHERE (Provider_Payment_Status = 'Pending' or Provider_Payment_Status = 'Disputed' or Provider_Payment_Status is null) "
-        "AND Provider_List is not null "
-        f"AND Tour_Date >= '{cutoff}' "
-        "ORDER BY Tour_Date desc "
-        "LIMIT 200"
-    )
-    records = zoho_coql(query)
-    # Filter out TEST bookings
-    filtered = [
-        r for r in records
-        if (r.get("Chanel_of_booking") or "").upper() != "TEST"
-    ]
-    logger.info(f"[PAY-REG] Unpaid orders: {len(records)} raw, {len(filtered)} after TEST filter")
+ORDER_FIELDS = (
+    "Name,Tour_Date,Type_of_Package,Provider_List,"
+    "Provider_Payment_Status,Net_Cost,Total_Net_Cost_Currency,"
+    "Adults1,Children1,Chanel_of_booking,Created_Time,Modified_Time"
+)
+
+PROVIDER_FIELDS = (
+    "Name,Payment_Trigger,Days_Offset,"
+    "Bank_Details,Bank_Account_Number,Bank_Account_Name"
+)
+
+
+def _filter_unpaid(records, today):
+    """Filter records to unpaid orders with providers, Tour_Date >= 60 days ago."""
+    cutoff = today - timedelta(days=60)
+
+    filtered = []
+    for r in records:
+        pl = r.get("Provider_List")
+        if not pl or not isinstance(pl, dict):
+            continue
+        pps = (r.get("Provider_Payment_Status") or "").strip()
+        if pps == "Paid":
+            continue
+        tour_date = _parse_date(r.get("Tour_Date"))
+        if not tour_date or tour_date < cutoff:
+            continue
+        if (r.get("Chanel_of_booking") or "").upper() == "TEST":
+            continue
+        filtered.append(r)
+
+    logger.info(f"[PAY-REG] Unpaid orders: {len(filtered)} after filters")
     return filtered
 
 
-def _fetch_paid_yesterday():
-    """Fetch orders marked Paid that were modified yesterday (ICT)."""
-    now_ict = datetime.now(ICT)
-    yesterday = now_ict.date() - timedelta(days=1)
-    start = f"{yesterday}T00:00:00+07:00"
-    end = f"{yesterday}T23:59:59+07:00"
-    query = (
-        "SELECT Name, Tour_Date, Type_of_Package, Provider_List, "
-        "Provider_Payment_Status, Net_Cost, Total_Net_Cost_Currency, "
-        "Chanel_of_booking, Modified_Time "
-        "FROM Koh_Chang_Orders "
-        "WHERE Provider_Payment_Status = 'Paid' "
-        "AND Provider_List is not null "
-        f"AND Modified_Time >= '{start}' "
-        f"AND Modified_Time <= '{end}' "
-        "ORDER BY Modified_Time desc "
-        "LIMIT 100"
-    )
-    records = zoho_coql(query)
-    filtered = [
-        r for r in records
-        if (r.get("Chanel_of_booking") or "").upper() != "TEST"
-    ]
-    logger.info(f"[PAY-REG] Paid yesterday: {len(records)} raw, {len(filtered)} after TEST filter")
+def _filter_paid_yesterday(records, today):
+    """Filter records to orders marked Paid that were modified yesterday (ICT)."""
+    yesterday_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    filtered = []
+    for r in records:
+        pps = (r.get("Provider_Payment_Status") or "").strip()
+        if pps != "Paid":
+            continue
+        pl = r.get("Provider_List")
+        if not pl or not isinstance(pl, dict):
+            continue
+        mod_time = r.get("Modified_Time") or ""
+        if not mod_time.startswith(yesterday_str):
+            continue
+        if (r.get("Chanel_of_booking") or "").upper() == "TEST":
+            continue
+        filtered.append(r)
+
+    logger.info(f"[PAY-REG] Paid yesterday: {len(filtered)} after filters")
     return filtered
 
 
@@ -74,26 +81,19 @@ def _fetch_paid_yesterday():
 # ---------------------------------------------------------------------------
 
 def _fetch_providers(provider_ids):
-    """Batch-fetch provider records by ID. Returns dict keyed by provider ID."""
+    """Fetch provider records by name lookup. Returns dict keyed by provider ID."""
     if not provider_ids:
         return {}
 
+    # We have IDs but zoho_search works by name. Collect names from orders
+    # instead — caller should pass provider_names_map.
+    # Fallback: fetch all providers and match by ID.
+    all_providers = zoho_get_records("Providers", fields=PROVIDER_FIELDS)
     providers = {}
-    # COQL IN clause — batch up to 50 at a time
-    id_list = list(provider_ids)
-    for i in range(0, len(id_list), 50):
-        batch = id_list[i:i + 50]
-        in_clause = ", ".join(f"'{pid}'" for pid in batch)
-        query = (
-            "SELECT Name, Payment_Trigger, Days_Offset, "
-            "Bank_Details, Bank_Account_Number, Bank_Account_Name "
-            f"FROM Providers WHERE id in ({in_clause})"
-        )
-        records = zoho_coql(query)
-        for r in records:
-            pid = r.get("id", "")
-            if pid:
-                providers[pid] = r
+    for r in all_providers:
+        pid = r.get("id", "")
+        if pid in provider_ids:
+            providers[pid] = r
 
     logger.info(f"[PAY-REG] Fetched {len(providers)}/{len(provider_ids)} providers")
     return providers
@@ -494,9 +494,11 @@ def run_payment_register():
     today = datetime.now(ICT).date()
     logger.info(f"[PAY-REG] Running for date: {today}")
 
-    # Fetch data
-    unpaid_orders = _fetch_unpaid_orders()
-    paid_yesterday = _fetch_paid_yesterday()
+    # Fetch all orders once, then split
+    all_orders = zoho_get_records("Koh_Chang_Orders", fields=ORDER_FIELDS)
+    logger.info(f"[PAY-REG] Fetched {len(all_orders)} total Koh_Chang_Orders")
+    unpaid_orders = _filter_unpaid(all_orders, today)
+    paid_yesterday = _filter_paid_yesterday(all_orders, today)
 
     # Get unique provider IDs
     provider_ids = set()
