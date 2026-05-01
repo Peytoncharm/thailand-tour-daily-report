@@ -9,8 +9,8 @@ logger = logging.getLogger(__name__)
 
 ICT = ZoneInfo("Asia/Bangkok")
 
-LINE_TOKEN = os.environ.get("KOHCHANG_LINE_TOKEN", "")
-LINE_GROUP = os.environ.get("RECONCILIATION_LINE_GROUP_ID", "")
+LINE_TOKEN = os.environ.get("PA_LINE_TOKEN", "")
+LINE_GROUP = os.environ.get("MONTHLY_REPORT_LINE_GROUP_ID", "")
 
 TOUR_TYPES = {"Individual Activity", "Package Activity"}
 TRANSFER_TYPES = {"Join Transfer", "Private Transfer"}
