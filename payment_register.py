@@ -26,7 +26,7 @@ def _fetch_unpaid_orders():
         "Provider_Payment_Status, Net_Cost, Total_Net_Cost_Currency, "
         "Adults1, Children1, Chanel_of_booking, Created_Time "
         "FROM Koh_Chang_Orders "
-        f"WHERE Provider_Payment_Status != 'Paid' "
+        f"WHERE (Provider_Payment_Status = 'Pending' or Provider_Payment_Status = 'Disputed' or Provider_Payment_Status is null) "
         "AND Provider_List is not null "
         f"AND Tour_Date >= '{cutoff}' "
         "ORDER BY Tour_Date desc "
