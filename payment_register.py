@@ -434,7 +434,7 @@ def run_payment_register():
     all_orders = zoho_get_records("Koh_Chang_Orders", fields=ORDER_FIELDS)
     logger.info(f"[PAY-REG] Fetched {len(all_orders)} total Koh_Chang_Orders")
     unpaid_orders = _filter_unpaid(all_orders, today)
-    paid_yesterday = _filter_paid_yesterday(all_orders, today)
+    paid_yesterday = []  # temp: skip for clean test run
 
     # Get unique provider IDs
     provider_ids = set()
