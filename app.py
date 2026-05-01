@@ -388,6 +388,45 @@ def test_monthly_report():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route("/test/pa-line-debug", methods=["GET"])
+def test_pa_line_debug():
+    """Temporary debug endpoint — remove after setup."""
+    import requests as _req
+    token = os.environ.get("PA_LINE_TOKEN", "")
+    group_id = os.environ.get("MONTHLY_REPORT_LINE_GROUP_ID", "")
+
+    # Check bot info
+    bot_resp = _req.get(
+        "https://api.line.me/v2/bot/info",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+
+    # Try simple push
+    push_resp = _req.post(
+        "https://api.line.me/v2/bot/message/push",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        json={
+            "to": group_id,
+            "messages": [{"type": "text", "text": "test"}],
+        },
+        timeout=10,
+    )
+
+    return jsonify({
+        "token_present": bool(token),
+        "token_prefix": token[:20] + "..." if token else "MISSING",
+        "group_id": group_id,
+        "bot_info_status": bot_resp.status_code,
+        "bot_info": bot_resp.json() if bot_resp.status_code == 200 else bot_resp.text,
+        "push_status": push_resp.status_code,
+        "push_response": push_resp.json() if push_resp.status_code != 200 else "OK",
+    })
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
