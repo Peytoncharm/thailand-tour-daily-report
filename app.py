@@ -427,6 +427,23 @@ def test_pa_line_debug():
     })
 
 
+@app.route("/test/pa-webhook-capture", methods=["POST", "GET"])
+def pa_webhook_capture():
+    """Temp endpoint to capture Orathai PA group ID."""
+    from flask import request
+    if request.method == "GET":
+        return jsonify({"status": "ok"}), 200
+    body = request.get_json(silent=True) or {}
+    events = body.get("events", [])
+    for event in events:
+        source = event.get("source", {})
+        group_id = source.get("groupId") or source.get("roomId")
+        source_type = source.get("type", "unknown")
+        event_type = event.get("type", "unknown")
+        logger.info(f"[PA-CAPTURE] event={event_type} source={source_type} groupId={group_id}")
+    return jsonify({"status": "ok"}), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
