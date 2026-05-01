@@ -16,8 +16,8 @@ ICT = ZoneInfo("Asia/Bangkok")
 # ---------------------------------------------------------------------------
 
 SHEET_ID = os.environ.get("MARKET_INTEL_SHEET_ID", "")
-ORATHAI_UID = os.environ.get("ORATHAI_PERSONAL_LINE_UID", "")
-LINE_TOKEN = os.environ.get("PA_LINE_TOKEN", "")
+MARKET_INTEL_LINE_TO = os.environ.get("RECONCILIATION_LINE_GROUP_ID", "")
+LINE_TOKEN = os.environ.get("KOHCHANG_LINE_TOKEN", "")
 
 DIESEL_DEFAULT = "40.20"
 DIESEL_OVERRIDE = os.environ.get("DIESEL_PRICE_OVERRIDE", "")
@@ -287,18 +287,18 @@ def run_market_intel_reminder(dry_run=False):
             }
 
         # --- Send LINE ---
-        if not ORATHAI_UID:
-            logger.error("[MARKET-INTEL] ORATHAI_PERSONAL_LINE_UID not set")
-            return {"action": "error", "message": "ORATHAI_PERSONAL_LINE_UID not set"}
+        if not MARKET_INTEL_LINE_TO:
+            logger.error("[MARKET-INTEL] RECONCILIATION_LINE_GROUP_ID not set")
+            return {"action": "error", "message": "RECONCILIATION_LINE_GROUP_ID not set"}
 
         from line_sender import _push_one
 
-        status_code, response_text = _push_one(message, ORATHAI_UID, LINE_TOKEN)
+        status_code, response_text = _push_one(message, MARKET_INTEL_LINE_TO, LINE_TOKEN)
 
         # Retry once on failure
         if status_code != 200:
             logger.warning(f"[MARKET-INTEL] LINE push failed ({status_code}), retrying once...")
-            status_code, response_text = _push_one(message, ORATHAI_UID, LINE_TOKEN)
+            status_code, response_text = _push_one(message, MARKET_INTEL_LINE_TO, LINE_TOKEN)
             if status_code != 200:
                 logger.error(f"[MARKET-INTEL] LINE push retry failed: {status_code}: {response_text}")
 
