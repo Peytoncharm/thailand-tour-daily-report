@@ -299,14 +299,14 @@ def cron_daily_payment_register():
 
         # Split message if > 4900 chars
         if len(message) <= 4900:
-            status_code, _ = _push_one(message, RECONCILIATION_LINE_GROUP_ID, KOHCHANG_LINE_TOKEN)
+            status_code, _ = _push_one(message, MONTHLY_REPORT_LINE_GROUP_ID, PA_LINE_TOKEN)
         else:
             parts = message.split("\n\u2501\u2501\u2501\u2501\u2501")
             for i, part in enumerate(parts):
                 chunk = part if i == 0 else "\u2501\u2501\u2501\u2501\u2501" + part
                 chunk = chunk.strip()
                 if chunk:
-                    status_code, _ = _push_one(chunk, RECONCILIATION_LINE_GROUP_ID, KOHCHANG_LINE_TOKEN)
+                    status_code, _ = _push_one(chunk, MONTHLY_REPORT_LINE_GROUP_ID, PA_LINE_TOKEN)
 
         logger.info(f"[CRON] Payment register sent, due_today={stats['due_today']}, overdue={stats['overdue']}")
         return jsonify({"status": "ok", "stats": stats}), 200

@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 ICT = ZoneInfo("Asia/Bangkok")
 
-LINE_TOKEN = os.environ.get("KOHCHANG_LINE_TOKEN", "")
-LINE_GROUP = os.environ.get("RECONCILIATION_LINE_GROUP_ID", "")
+LINE_TOKEN = os.environ.get("PA_LINE_TOKEN", "")
+LINE_GROUP = os.environ.get("MONTHLY_REPORT_LINE_GROUP_ID", "")
 
 
 # ---------------------------------------------------------------------------
@@ -183,14 +183,11 @@ def _get_amount(order):
 
 
 def _fmt_amount(val):
-    """Format number as Thai baht string."""
+    """Format number as whole Thai baht string (no decimals)."""
     if val is None:
         return "0"
     try:
-        n = float(val)
-        if n == int(n):
-            return f"{int(n):,}"
-        return f"{n:,.2f}"
+        return f"{round(float(val)):,}"
     except (ValueError, TypeError):
         return "0"
 
@@ -247,14 +244,14 @@ def _format_bank(provider):
     acct_name = (provider.get("Bank_Account_Name") or "").strip()
 
     if not bank and not acct_num and not acct_name:
-        return "      \U0001f3e6 (\u0e44\u0e21\u0e48\u0e21\u0e35\u0e02\u0e49\u0e2d\u0e21\u0e39\u0e25\u0e18\u0e19\u0e32\u0e04\u0e32\u0e23)"
+        return None
 
     parts = []
     if bank:
         parts.append(bank)
     if acct_num:
         parts.append(acct_num)
-    line = f"      \U0001f3e6 {' '.join(parts)}"
+    line = f"   🏦 {' '.join(parts)}"
     if acct_name:
         line += f" ({acct_name})"
     return line
@@ -304,32 +301,32 @@ def _build_provider_section(orders, providers, duplicates, show_overdue=False):
         overdue_tag = ""
         if show_overdue and prov_orders:
             max_days = max(o.get("_days_overdue", 0) for o in prov_orders)
-            overdue_tag = f" (\u0e40\u0e25\u0e22 {max_days} \u0e27\u0e31\u0e19)"  # (เลย N วัน)
+            overdue_tag = f" (เลย {max_days} วัน)"
 
-        icon = "\U0001f534" if show_overdue else "\U0001f4cc"  # 🔴 or 📌
+        icon = "🔴" if show_overdue else "📌"
         lines.append(
-            f"{icon} {prov_name} \u2014 {len(prov_orders)} "
-            f"\u0e23\u0e32\u0e22\u0e01\u0e32\u0e23 "
-            f"\u0e23\u0e27\u0e21 \u0e3f{_fmt_amount(prov_total)}{overdue_tag}"
+            f"{icon} {prov_name} — {len(prov_orders)} รายการ "
+            f"฿{_fmt_amount(prov_total)}{overdue_tag}"
         )
+
+        # Bank details once per provider
+        bank_line = _format_bank(provider)
+        if bank_line:
+            lines.append(bank_line)
 
         for i, order in enumerate(prov_orders, 1):
             name = (order.get("Name") or "Unknown").strip()
             pax = _format_pax(order)
-            pkg = (order.get("Type_of_Package") or "").strip()
             tour_date = _parse_date(order.get("Tour_Date"))
             tour_str = _format_thai_date(tour_date)
-            amt_val, amt_str = _get_amount(order)
+            _, amt_str = _get_amount(order)
             order_id = order.get("id", "")
 
             dup_flag = ""
             if order_id in duplicates:
-                dup_flag = " \u26a0\ufe0f \u0e15\u0e23\u0e27\u0e08\u0e2a\u0e2d\u0e1a \u2014 \u0e2d\u0e32\u0e08\u0e0b\u0e49\u0e33"
-                # ⚠️ ตรวจสอบ — อาจซ้ำ
+                dup_flag = " ⚠️ซ้ำ?"
 
-            lines.append(f"   {i}. {name} ({pax}) {pkg} {tour_str}")
-            lines.append(f"      \u0e3f{amt_str}{dup_flag}")
-            lines.append(_format_bank(provider))
+            lines.append(f"   {i}. {name} ({pax}) ฿{amt_str} — {tour_str}{dup_flag}")
 
         lines.append("")
         total_amount += prov_total
@@ -357,15 +354,9 @@ def _build_paid_section(orders, providers):
             if amt:
                 prov_total += amt
 
-        mod_time = prov_orders[0].get("Modified_Time")
-        paid_date = _parse_date(mod_time)
-        paid_str = _format_thai_date(paid_date) if paid_date else "?"
-
         lines.append(
-            f"\u2705 {prov_name} \u2014 {len(prov_orders)} "
-            f"\u0e23\u0e32\u0e22\u0e01\u0e32\u0e23 "
-            f"\u0e3f{_fmt_amount(prov_total)} "
-            f"(\u0e08\u0e48\u0e32\u0e22 {paid_str})"
+            f"✅ {prov_name} — {len(prov_orders)} รายการ "
+            f"฿{_fmt_amount(prov_total)}"
         )
         total_amount += prov_total
 
@@ -378,45 +369,32 @@ def build_report(due_today, overdue, paid_yesterday, providers, today, duplicate
 
     # --- DUE TODAY ---
     if due_today:
-        lines.append(f"\U0001f4b0 \u0e04\u0e23\u0e1a\u0e01\u0e33\u0e2b\u0e19\u0e14\u0e08\u0e48\u0e32\u0e22 Provider \u2014 {_format_thai_date_full(today)}")
+        lines.append(f"💰 ครบกำหนดจ่าย — {_format_thai_date_full(today)}")
         lines.append("")
         section, due_total, due_count = _build_provider_section(
             due_today, providers, duplicates
         )
         lines.extend(section)
-
-        prov_count = len({_get_provider_info(o)[0] for o in due_today})
         lines.append(
-            f"\U0001f4b0 \u0e23\u0e27\u0e21\u0e27\u0e31\u0e19\u0e19\u0e35\u0e49: "
-            f"\u0e3f{_fmt_amount(due_total)} "
-            f"({due_count} \u0e23\u0e32\u0e22\u0e01\u0e32\u0e23, "
-            f"{prov_count} providers)"
+            f"💰 รวมวันนี้: ฿{_fmt_amount(due_total)} ({due_count} รายการ)"
         )
     else:
         lines.append(
-            f"\u2705 \u0e44\u0e21\u0e48\u0e21\u0e35 Provider "
-            f"\u0e17\u0e35\u0e48\u0e04\u0e23\u0e1a\u0e01\u0e33\u0e2b\u0e19\u0e14\u0e08\u0e48\u0e32\u0e22\u0e27\u0e31\u0e19\u0e19\u0e35\u0e49 "
-            f"\u2014 {_format_thai_date_full(today)}"
+            f"✅ ไม่มี Provider ที่ครบกำหนดจ่ายวันนี้ — {_format_thai_date_full(today)}"
         )
         due_total = 0
 
     # --- OVERDUE ---
     if overdue:
         lines.append("")
-        lines.append(
-            "\u2501\u2501\u2501\u2501\u2501 "
-            "\u0e04\u0e49\u0e32\u0e07\u0e08\u0e48\u0e32\u0e22 (OVERDUE) "
-            "\u2501\u2501\u2501\u2501\u2501"
-        )
+        lines.append("━━━ 🔴 OVERDUE ━━━")
         lines.append("")
         section, overdue_total, overdue_count = _build_provider_section(
             overdue, providers, duplicates, show_overdue=True
         )
         lines.extend(section)
         lines.append(
-            f"\U0001f534 \u0e23\u0e27\u0e21\u0e04\u0e49\u0e32\u0e07\u0e08\u0e48\u0e32\u0e22: "
-            f"\u0e3f{_fmt_amount(overdue_total)} "
-            f"({overdue_count} \u0e23\u0e32\u0e22\u0e01\u0e32\u0e23)"
+            f"🔴 รวมค้างจ่าย: ฿{_fmt_amount(overdue_total)} ({overdue_count} รายการ)"
         )
     else:
         overdue_total = 0
@@ -424,11 +402,7 @@ def build_report(due_today, overdue, paid_yesterday, providers, today, duplicate
     # --- PAID YESTERDAY ---
     if paid_yesterday:
         lines.append("")
-        lines.append(
-            "\u2501\u2501\u2501\u2501\u2501 "
-            "\u0e08\u0e48\u0e32\u0e22\u0e41\u0e25\u0e49\u0e27\u0e40\u0e21\u0e37\u0e48\u0e2d\u0e27\u0e32\u0e19 "
-            "\u2501\u2501\u2501\u2501\u2501"
-        )
+        lines.append("━━━ ✅ PAID YESTERDAY ━━━")
         lines.append("")
         paid_lines, paid_total = _build_paid_section(paid_yesterday, providers)
         lines.extend(paid_lines)
@@ -437,29 +411,11 @@ def build_report(due_today, overdue, paid_yesterday, providers, today, duplicate
 
     # --- SUMMARY ---
     lines.append("")
-    lines.append("\u2501" * 17)
-    lines.append("\U0001f4ca \u0e2a\u0e23\u0e38\u0e1b\u0e23\u0e27\u0e21:")
-    lines.append(f"   \u0e27\u0e31\u0e19\u0e19\u0e35\u0e49\u0e15\u0e49\u0e2d\u0e07\u0e08\u0e48\u0e32\u0e22: \u0e3f{_fmt_amount(due_total)}")
-    lines.append(f"   \u0e04\u0e49\u0e32\u0e07\u0e08\u0e48\u0e32\u0e22: \u0e3f{_fmt_amount(overdue_total)}")
-    lines.append(
-        f"   \u0e08\u0e48\u0e32\u0e22\u0e41\u0e25\u0e49\u0e27\u0e40\u0e21\u0e37\u0e48\u0e2d\u0e27\u0e32\u0e19: "
-        f"\u0e3f{_fmt_amount(paid_total)}"
-    )
-
-    # --- FOOTER ---
-    lines.append("")
-    lines.append(
-        "\u26a0\ufe0f \u0e08\u0e48\u0e32\u0e22\u0e41\u0e25\u0e49\u0e27 \u2192 "
-        "\u0e2d\u0e31\u0e1e\u0e40\u0e14\u0e17 Provider Payment Status = \"Paid\""
-    )
-    lines.append(
-        "   + \u0e43\u0e2a\u0e48 Bank Reference \u0e43\u0e19 Zoho \u0e17\u0e31\u0e19\u0e17\u0e35"
-    )
-    lines.append(
-        "   (\u0e23\u0e30\u0e1a\u0e1a\u0e15\u0e23\u0e27\u0e08\u0e2a\u0e2d\u0e1a "
-        "\u2014 \u0e44\u0e21\u0e48\u0e43\u0e2a\u0e48 Bank Reference "
-        "\u0e08\u0e30 flag Disputed)"
-    )
+    lines.append("━━━━━━━━━━━━━━━━━")
+    lines.append("สรุป:")
+    lines.append(f"  วันนี้ต้องจ่าย: ฿{_fmt_amount(due_total)}")
+    lines.append(f"  ค้างจ่าย: ฿{_fmt_amount(overdue_total)}")
+    lines.append(f"  จ่ายแล้วเมื่อวาน: ฿{_fmt_amount(paid_total)}")
 
     return "\n".join(lines).strip()
 
