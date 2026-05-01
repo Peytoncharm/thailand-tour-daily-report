@@ -291,6 +291,7 @@ def _build_provider_section(orders, providers, duplicates, show_overdue=False):
     total_count = 0
 
     for (prov_id, prov_name), prov_orders in sorted(grouped.items(), key=lambda x: x[0][1]):
+        prov_orders.sort(key=lambda o: _parse_date(o.get("Tour_Date")) or date.min)
         provider = providers.get(prov_id, {})
         prov_total = 0
         for o in prov_orders:
