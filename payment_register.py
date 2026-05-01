@@ -218,27 +218,6 @@ def _classify_orders(orders, providers, today):
     return due_today, overdue
 
 
-def _detect_duplicates(orders, providers):
-    """Detect potential duplicate payments: same provider + same amount on same day."""
-    seen = {}
-    duplicates = set()
-
-    for order in orders:
-        prov_id, _ = _get_provider_info(order)
-        amount, _ = _get_amount(order)
-        if amount is None:
-            continue
-        key = (prov_id, amount)
-        if key in seen:
-            duplicates.add(order.get("id", ""))
-            duplicates.add(seen[key])
-        else:
-            seen[key] = order.get("id", "")
-
-    if duplicates:
-        logger.warning(f"[PAY-REG] Potential duplicates detected: {len(duplicates)} orders")
-    return duplicates
-
 
 # ---------------------------------------------------------------------------
 # Message formatting
@@ -513,7 +492,7 @@ def run_payment_register():
     due_today, overdue = _classify_orders(unpaid_orders, providers, today)
 
     # Detect duplicates
-    duplicates = _detect_duplicates(due_today, providers)
+    duplicates = set()
 
     # Build message
     message = build_report(due_today, overdue, paid_yesterday, providers, today, duplicates)
