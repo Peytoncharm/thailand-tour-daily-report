@@ -131,3 +131,48 @@ def zoho_search(module: str, criteria: str, fields: str = None, page: int = 1) -
     except Exception as e:
         logger.error(f"[ZOHO-TH] Search exception: {e}")
         return []
+
+
+def zoho_coql(query: str) -> list:
+    """Execute a COQL query against Zoho CRM. Returns list of records."""
+    global _access_token
+    token = _get_access_token()
+    if not token:
+        return []
+
+    try:
+        resp = requests.post(
+            f"{ZOHO_API_BASE}/coql",
+            headers={
+                "Authorization": f"Zoho-oauthtoken {token}",
+                "Content-Type": "application/json",
+            },
+            json={"select_query": query},
+            timeout=15,
+        )
+        if resp.status_code == 401:
+            _access_token = None
+            token = _get_access_token()
+            if not token:
+                return []
+            resp = requests.post(
+                f"{ZOHO_API_BASE}/coql",
+                headers={
+                    "Authorization": f"Zoho-oauthtoken {token}",
+                    "Content-Type": "application/json",
+                },
+                json={"select_query": query},
+                timeout=15,
+            )
+        if resp.status_code == 204:
+            return []
+        if resp.status_code != 200:
+            logger.error(f"[ZOHO-TH] COQL error {resp.status_code}: {resp.text}")
+            return []
+        data = resp.json()
+        records = data.get("data", [])
+        logger.info(f"[ZOHO-TH] COQL returned {len(records)} records")
+        return records
+    except Exception as e:
+        logger.error(f"[ZOHO-TH] COQL exception: {e}")
+        return []

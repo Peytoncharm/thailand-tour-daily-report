@@ -281,6 +281,57 @@ def test_market_intel_reminder():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Payment Register endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/cron/daily-payment-register", methods=["GET", "POST"])
+def cron_daily_payment_register():
+    """Production trigger — cron-job.org hits daily 08:00 ICT."""
+    try:
+        from payment_register import run_payment_register
+        from line_sender import _push_one
+
+        logger.info("[CRON] Starting daily payment register...")
+        message, stats = run_payment_register()
+
+        # Split message if > 4900 chars
+        if len(message) <= 4900:
+            status_code, _ = _push_one(message, RECONCILIATION_LINE_GROUP_ID, KOHCHANG_LINE_TOKEN)
+        else:
+            parts = message.split("\n\u2501\u2501\u2501\u2501\u2501")
+            for i, part in enumerate(parts):
+                chunk = part if i == 0 else "\u2501\u2501\u2501\u2501\u2501" + part
+                chunk = chunk.strip()
+                if chunk:
+                    status_code, _ = _push_one(chunk, RECONCILIATION_LINE_GROUP_ID, KOHCHANG_LINE_TOKEN)
+
+        logger.info(f"[CRON] Payment register sent, due_today={stats['due_today']}, overdue={stats['overdue']}")
+        return jsonify({"status": "ok", "stats": stats}), 200
+    except Exception as e:
+        logger.error(f"[CRON] Payment register error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/test/payment-register", methods=["GET"])
+def test_payment_register():
+    """Test endpoint — returns JSON of what would be sent. NO LINE send."""
+    try:
+        from payment_register import run_payment_register
+
+        message, stats = run_payment_register()
+
+        return jsonify({
+            "status": "ok",
+            "stats": stats,
+            "message_preview": message,
+            "message_length": len(message),
+        }), 200
+    except Exception as e:
+        logger.error(f"[TEST] Payment register error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
