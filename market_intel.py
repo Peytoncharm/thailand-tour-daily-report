@@ -17,7 +17,7 @@ ICT = ZoneInfo("Asia/Bangkok")
 
 SHEET_ID = os.environ.get("MARKET_INTEL_SHEET_ID", "")
 ORATHAI_UID = os.environ.get("ORATHAI_PERSONAL_LINE_UID", "")
-KOHCHANG_TOKEN = os.environ.get("KOHCHANG_LINE_TOKEN", "")
+TRANSFER_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
 
 DIESEL_DEFAULT = "40.20"
 DIESEL_OVERRIDE = os.environ.get("DIESEL_PRICE_OVERRIDE", "")
@@ -293,12 +293,12 @@ def run_market_intel_reminder(dry_run=False):
 
         from line_sender import _push_one
 
-        status_code, response_text = _push_one(message, ORATHAI_UID, KOHCHANG_TOKEN)
+        status_code, response_text = _push_one(message, ORATHAI_UID, TRANSFER_TOKEN)
 
         # Retry once on failure
         if status_code != 200:
             logger.warning(f"[MARKET-INTEL] LINE push failed ({status_code}), retrying once...")
-            status_code, response_text = _push_one(message, ORATHAI_UID, KOHCHANG_TOKEN)
+            status_code, response_text = _push_one(message, ORATHAI_UID, TRANSFER_TOKEN)
             if status_code != 200:
                 logger.error(f"[MARKET-INTEL] LINE push retry failed: {status_code}: {response_text}")
 
