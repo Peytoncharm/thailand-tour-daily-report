@@ -49,24 +49,6 @@ def _get_sheet_client():
         logger.warning("[MARKET-INTEL] GOOGLE_SERVICE_ACCOUNT_JSON not set")
         return None
 
-    # --- Diagnostic logging (remove after debug) ---
-    if sa_json:
-        logger.info(f"[MARKET-INTEL DEBUG] JSON length: {len(sa_json)}")
-        logger.info(f"[MARKET-INTEL DEBUG] JSON first 100 chars: {sa_json[:100]}")
-        logger.info(f"[MARKET-INTEL DEBUG] JSON last 100 chars: {sa_json[-100:]}")
-        try:
-            parsed = json.loads(sa_json)
-            logger.info(f"[MARKET-INTEL DEBUG] private_key_id: {parsed.get('private_key_id', 'MISSING')}")
-            logger.info(f"[MARKET-INTEL DEBUG] client_email: {parsed.get('client_email', 'MISSING')}")
-            pk = parsed.get('private_key', '')
-            logger.info(f"[MARKET-INTEL DEBUG] private_key length: {len(pk)}")
-            logger.info(f"[MARKET-INTEL DEBUG] private_key starts with: {pk[:50]}")
-            logger.info(f"[MARKET-INTEL DEBUG] private_key ends with: {pk[-50:]}")
-            logger.info(f"[MARKET-INTEL DEBUG] private_key has \\n literal: {chr(92) + 'n' in pk}")
-            logger.info(f"[MARKET-INTEL DEBUG] private_key has actual newlines: {chr(10) in pk}")
-        except Exception as e:
-            logger.error(f"[MARKET-INTEL DEBUG] JSON parse failed: {e}")
-    # --- End diagnostic logging ---
 
     try:
         sa_info = json.loads(sa_json)
