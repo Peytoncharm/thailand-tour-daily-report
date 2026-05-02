@@ -16,6 +16,8 @@ tracking_sessions = {}
 # LINE debug config (kept for /driver/debug endpoint)
 TRANSFER_LINE_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
 TRANSFER_LINE_GROUP_ID = "C03b8de018aa2076157d032bc9b0ae279"
+TEAM_NOTIFY_GROUP_ID = "C9ff8de09378cba9f1a8a53a04b707a0a"
+BASE_URL = "https://thailand-tour-daily-report.onrender.com"
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +80,7 @@ def driver_share_page(uuid):
             "pickup": pickup,
             "time": time_str,
             "active": True,
+            "notified": False,
         }
         logger.info(f"[DRIVER-TRACK] Session created: uuid={uuid}, name={name}, pickup={pickup}")
     else:
@@ -108,7 +111,7 @@ def driver_update(uuid):
 
     if uuid not in tracking_sessions:
         tracking_sessions[uuid] = {
-            "name": "", "pickup": "", "time": "", "active": True
+            "name": "", "pickup": "", "time": "", "active": True, "notified": False
         }
 
     session = tracking_sessions[uuid]
@@ -126,6 +129,34 @@ def driver_update(uuid):
         f"lat={data['lat']:.6f}, lng={data['lng']:.6f}, "
         f"accuracy={data.get('accuracy', '?')}m"
     )
+
+    # Send LINE notification to team on first GPS fix only
+    if not session.get("notified") and TRANSFER_LINE_TOKEN:
+        session["notified"] = True
+        view_url = f"{BASE_URL}/driver/track/{uuid}/view"
+        msg = (
+            "📍 คนขับเริ่มแชร์ตำแหน่ง\n"
+            f"👤 ลูกค้า: {session.get('name') or '(ไม่ระบุ)'}\n"
+            f"⏰ Pickup: {session.get('time') or '(ไม่ระบุ)'}\n"
+            f"📍 จาก: {session.get('pickup') or '(ไม่ระบุ)'}\n"
+            f"🗺️ ดูตำแหน่ง: {view_url}"
+        )
+        try:
+            requests.post(
+                "https://api.line.me/v2/bot/message/push",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {TRANSFER_LINE_TOKEN}",
+                },
+                json={
+                    "to": TEAM_NOTIFY_GROUP_ID,
+                    "messages": [{"type": "text", "text": msg}],
+                },
+                timeout=5,
+            )
+            logger.info(f"[DRIVER-TRACK] Team notified for uuid={uuid}")
+        except Exception as e:
+            logger.error(f"[DRIVER-TRACK] Team notify failed: {e}")
 
     return jsonify({"status": "ok", "updated_at": now}), 200
 
