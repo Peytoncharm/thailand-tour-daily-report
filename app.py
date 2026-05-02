@@ -388,6 +388,38 @@ def test_monthly_report():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Pre-Pickup Reminder (every 15 min via cron-job.org)
+# ---------------------------------------------------------------------------
+
+@app.route("/cron/pre-pickup-reminder", methods=["GET", "POST"])
+def cron_pre_pickup_reminder():
+    """Send GPS tracking reminders to drivers 30 min before pickup."""
+    def _run():
+        try:
+            from pre_pickup import run_pre_pickup
+            stats = run_pre_pickup()
+            logger.info(f"[CRON] Pre-pickup reminder done: {stats}")
+        except Exception as e:
+            logger.error(f"[CRON] Pre-pickup reminder error: {e}", exc_info=True)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"status": "ok", "message": "Pre-pickup reminder started"}), 200
+
+
+@app.route("/test/pre-pickup-reminder", methods=["GET"])
+def test_pre_pickup_reminder():
+    """Dry-run: show what would be sent without sending LINE messages."""
+    try:
+        from pre_pickup import run_pre_pickup
+        stats = run_pre_pickup(dry_run=True)
+        return jsonify({"status": "ok", "stats": stats}), 200
+    except Exception as e:
+        logger.error(f"[TEST] Pre-pickup reminder error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route("/test/pa-line-debug", methods=["GET"])
 def test_pa_line_debug():
     """Temporary debug endpoint — remove after setup."""
