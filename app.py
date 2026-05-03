@@ -468,6 +468,46 @@ def pa_webhook_capture():
     return jsonify({"status": "ok"}), 200
 
 
+# ---------------------------------------------------------------------------
+# One-shot broadcast message endpoint (admin use only)
+# ---------------------------------------------------------------------------
+
+@app.route("/admin/send-bulk-line", methods=["POST"])
+def admin_send_bulk_line():
+    """Send the same LINE message to multiple recipients via TRANSFER_LINE_TOKEN.
+    Body: {"recipients": ["Uabc...", ...], "message": "text"}
+    """
+    data = request.get_json(silent=True)
+    if not data or "recipients" not in data or "message" not in data:
+        return jsonify({"error": "Need recipients + message"}), 400
+
+    token = os.environ.get("TRANSFER_LINE_TOKEN", "")
+    if not token:
+        return jsonify({"error": "TRANSFER_LINE_TOKEN not set"}), 500
+
+    recipients = data["recipients"]
+    msg = data["message"]
+    results = []
+
+    for uid in recipients:
+        try:
+            resp = requests.post(
+                "https://api.line.me/v2/bot/message/push",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={"to": uid, "messages": [{"type": "text", "text": msg}]},
+                timeout=10,
+            )
+            results.append({"to": uid[:10], "status": resp.status_code})
+        except Exception as e:
+            results.append({"to": uid[:10], "status": "error", "detail": str(e)})
+
+    ok_count = sum(1 for r in results if r["status"] == 200)
+    return jsonify({"sent": ok_count, "total": len(recipients), "results": results}), 200
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
