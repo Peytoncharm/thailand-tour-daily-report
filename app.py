@@ -394,18 +394,10 @@ def test_monthly_report():
 
 @app.route("/cron/pre-pickup-reminder", methods=["GET", "POST"])
 def cron_pre_pickup_reminder():
-    """Send GPS tracking reminders to drivers 30 min before pickup."""
-    def _run():
-        try:
-            from pre_pickup import run_pre_pickup
-            stats = run_pre_pickup()
-            logger.info(f"[CRON] Pre-pickup reminder done: {stats}")
-        except Exception as e:
-            logger.error(f"[CRON] Pre-pickup reminder error: {e}", exc_info=True)
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    return jsonify({"status": "ok", "message": "Pre-pickup reminder started"}), 200
+    """DISABLED: V1 pre-pickup reminders replaced by n8n workflow 2LdDPFybPPSGKvfp.
+    Endpoint kept alive so cron-job.org doesn't alert on 404, but does nothing."""
+    logger.info("[CRON] Pre-pickup reminder V1 DISABLED — use n8n workflow instead")
+    return jsonify({"status": "disabled", "message": "V1 disabled, use n8n workflow 2LdDPFybPPSGKvfp"}), 200
 
 
 @app.route("/test/pre-pickup-reminder", methods=["GET"])
