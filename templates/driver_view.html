@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Driver Location</title>
+<title>&#xe15;&#xe34;&#xe14;&#xe15;&#xe32;&#xe21;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;&#xe04;&#xe19;&#xe02;&#xe31;&#xe1a;</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -54,13 +54,26 @@
     z-index: 1000;
     box-shadow: 0 1px 4px rgba(0,0,0,0.1);
   }
+  .stale-warning {
+    position: absolute;
+    top: 70px; left: 50%;
+    transform: translateX(-50%);
+    background: #fff3e0;
+    border: 1px solid #ffcc80;
+    padding: 8px 16px;
+    border-radius: 12px;
+    font-size: 13px;
+    color: #e65100;
+    z-index: 1000;
+    display: none;
+  }
 </style>
 </head>
 <body>
 
 <div class="header">
   <div class="header-left">
-    <h2>&#x1f697; <span id="headerName">{{ name or 'Driver' }}</span></h2>
+    <h2>&#x1F4CD; &#xe15;&#xe34;&#xe14;&#xe15;&#xe32;&#xe21;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;&#xe04;&#xe19;&#xe02;&#xe31;&#xe1a; &#x2014; <span id="headerName">{{ customer_name or 'Driver' }}</span></h2>
     <div class="info" id="headerInfo"></div>
   </div>
   <div class="badge waiting" id="statusBadge">Waiting...</div>
@@ -69,25 +82,31 @@
 <div id="map"></div>
 
 <div class="overlay" id="waitingOverlay">
-  <div class="icon">&#x23f3;</div>
+  <div class="icon">&#x23F3;</div>
   <div>&#xe23;&#xe2d;&#xe04;&#xe19;&#xe02;&#xe31;&#xe1a;&#xe40;&#xe1b;&#xe34;&#xe14;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;...</div>
+</div>
+
+<div class="stale-warning" id="staleWarning">
+  &#x26A0;&#xFE0F; &#xe44;&#xe21;&#xe48;&#xe44;&#xe14;&#xe49;&#xe23;&#xe31;&#xe1a;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;&#xe21;&#xe32;&#xe01;&#xe01;&#xe27;&#xe48;&#xe32; 5 &#xe19;&#xe32;&#xe17;&#xe35;
 </div>
 
 <div class="update-time" id="updateTime" style="display:none"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-var UUID = "{{ uuid }}";
-var STATUS_URL = "/driver/track/" + UUID + "/status";
+var BOOKING_ID = "{{ booking_id }}";
+var DATA_URL = "/track/" + BOOKING_ID + "/data";
+var POLL_INTERVAL_MS = 15000; // 15 seconds
 var map, marker, firstLoad = true;
+var lastUpdateTime = null;
 
 // Header info
-var infoParts = [];
-if ("{{ pickup }}") infoParts.push("Pickup: {{ pickup }}");
-if ("{{ time }}") infoParts.push("{{ time }}");
-document.getElementById('headerInfo').textContent = infoParts.join(" | ");
+(function() {
+  var time = "{{ pickup_time }}";
+  if (time) document.getElementById('headerInfo').textContent = "Pickup: " + time;
+})();
 
-// Init map
+// Init map — centered on Koh Chang area
 map = L.map('map').setView([12.08, 102.30], 13);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap',
@@ -95,24 +114,26 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 var driverIcon = L.divIcon({
-  html: '<div style="font-size:32px">&#x1f697;</div>',
+  html: '<div style="font-size:32px">&#x1F697;</div>',
   iconSize: [32, 32],
   iconAnchor: [16, 16],
   className: ''
 });
 
 function poll() {
-  fetch(STATUS_URL)
+  fetch(DATA_URL)
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var badge = document.getElementById('statusBadge');
       var overlay = document.getElementById('waitingOverlay');
       var timeEl = document.getElementById('updateTime');
+      var staleEl = document.getElementById('staleWarning');
 
       if (data.status === 'waiting') {
         badge.className = 'badge waiting';
         badge.textContent = 'Waiting...';
         overlay.style.display = 'block';
+        staleEl.style.display = 'none';
         return;
       }
 
@@ -139,18 +160,27 @@ function poll() {
         }
 
         if (data.updated_at) {
+          lastUpdateTime = new Date(data.updated_at);
           var t = data.updated_at.split('T')[1] || data.updated_at;
           timeEl.textContent = 'Updated: ' + t;
           timeEl.style.display = 'block';
+
+          // Stale warning if no update for 5+ minutes
+          var now = new Date();
+          var diffMs = now - lastUpdateTime;
+          if (diffMs > 300000) {
+            staleEl.style.display = 'block';
+          } else {
+            staleEl.style.display = 'none';
+          }
         }
       }
     })
     .catch(function(e) { console.error('Poll error:', e); });
 }
 
-// Poll every 10 seconds
 poll();
-setInterval(poll, 10000);
+setInterval(poll, POLL_INTERVAL_MS);
 </script>
 </body>
 </html>

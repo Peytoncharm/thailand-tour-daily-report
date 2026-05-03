@@ -14,13 +14,21 @@
     flex-direction: column;
   }
 
+  .driver-only-bar {
+    background: #1565c0;
+    color: white;
+    text-align: center;
+    padding: 8px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
   .booking-bar {
     background: white;
     padding: 16px 20px;
     box-shadow: 0 1px 4px rgba(0,0,0,0.1);
     text-align: center;
   }
-  .booking-bar .label { font-size: 13px; color: #999; margin-bottom: 4px; }
   .booking-bar .info { font-size: 18px; color: #333; font-weight: 600; line-height: 1.5; }
   .booking-bar .sub { font-size: 15px; color: #666; margin-top: 2px; }
 
@@ -34,7 +42,6 @@
     text-align: center;
   }
 
-  /* Pulse animation for active sharing */
   @keyframes pulse {
     0% { transform: scale(1); opacity: 1; }
     50% { transform: scale(1.15); opacity: 0.7; }
@@ -55,12 +62,23 @@
     font-size: 22px;
     color: #333;
     font-weight: 600;
-    margin-bottom: 32px;
+    margin-bottom: 16px;
   }
   .status-sub {
     font-size: 16px;
     color: #888;
     margin-top: 12px;
+  }
+
+  .warning-box {
+    background: #fff3e0;
+    border: 1px solid #ffcc80;
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin-bottom: 24px;
+    font-size: 15px;
+    color: #e65100;
+    max-width: 400px;
   }
 
   .btn-main {
@@ -83,20 +101,8 @@
     -webkit-tap-highlight-color: transparent;
   }
   .btn-main:active { transform: scale(0.97); }
-
-  .btn-start {
-    background: #4CAF50;
-    color: white;
-  }
-  .btn-stop {
-    background: #e53935;
-    color: white;
-  }
-  .btn-disabled {
-    background: #bdbdbd;
-    color: white;
-    pointer-events: none;
-  }
+  .btn-start { background: #4CAF50; color: white; }
+  .btn-stop { background: #e53935; color: white; }
 
   .update-time {
     font-size: 14px;
@@ -104,7 +110,6 @@
     margin-top: 16px;
   }
 
-  /* Loading spinner */
   @keyframes spin { to { transform: rotate(360deg); } }
   .spinner {
     width: 48px; height: 48px;
@@ -121,6 +126,10 @@
 </head>
 <body>
 
+<div class="driver-only-bar">
+  &#x1F6D1; &#xe2b;&#xe19;&#xe49;&#xe32;&#xe19;&#xe35;&#xe49;&#xe2a;&#xe33;&#xe2b;&#xe23;&#xe31;&#xe1a;&#xe04;&#xe19;&#xe02;&#xe31;&#xe1a;&#xe40;&#xe17;&#xe48;&#xe32;&#xe19;&#xe31;&#xe49;&#xe19;
+</div>
+
 <div class="booking-bar">
   <div class="info" id="customerName"></div>
   <div class="sub" id="bookingDetail"></div>
@@ -129,44 +138,50 @@
 <div class="main">
 
   <!-- State: Loading GPS -->
-  <div id="stateLoading">
+  <div id="stateLoading" style="display:none">
     <div class="spinner"></div>
-    <div class="status-msg">กำลังขอตำแหน่ง GPS...</div>
-    <div class="status-sub">กรุณาอนุญาตการเข้าถึงตำแหน่ง</div>
+    <div class="status-msg">&#xe01;&#xe33;&#xe25;&#xe31;&#xe07;&#xe02;&#xe2d;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07; GPS...</div>
+    <div class="status-sub">&#xe01;&#xe23;&#xe38;&#xe13;&#xe32;&#xe2d;&#xe19;&#xe38;&#xe0d;&#xe32;&#xe15;&#xe01;&#xe32;&#xe23;&#xe40;&#xe02;&#xe49;&#xe32;&#xe16;&#xe36;&#xe07;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;</div>
   </div>
 
-  <!-- State: Ready (before first fix) — auto-starts, but show button as fallback -->
-  <div id="stateReady" style="display:none">
-    <button class="btn-main btn-start" id="btnStart" onclick="startSharing()">
-      เริ่มแชร์ตำแหน่ง 📍
+  <!-- State: Ready — big start button -->
+  <div id="stateReady">
+    <div class="warning-box">
+      &#x26A0;&#xFE0F; &#xe2d;&#xe22;&#xe48;&#xe32;&#xe1b;&#xe34;&#xe14; browser &#xe23;&#xe30;&#xe2b;&#xe27;&#xe48;&#xe32;&#xe07;&#xe40;&#xe14;&#xe34;&#xe19;&#xe17;&#xe32;&#xe07; &#x2014; &#xe01;&#xe32;&#xe23;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe08;&#xe30;&#xe2b;&#xe22;&#xe38;&#xe14;&#xe2d;&#xe31;&#xe15;&#xe42;&#xe19;&#xe21;&#xe31;&#xe15;&#xe34;&#xe43;&#xe19; 8 &#xe0a;&#xe31;&#xe48;&#xe27;&#xe42;&#xe21;&#xe07;
+    </div>
+    <button class="btn-main btn-start" onclick="startSharing()">
+      &#xe40;&#xe23;&#xe34;&#xe48;&#xe21;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07; &#x1F4CD;
     </button>
   </div>
 
   <!-- State: Active sharing -->
   <div id="stateActive" style="display:none">
     <div class="status-msg">
-      <span class="pulse-dot"></span>กำลังแชร์ตำแหน่ง...
+      <span class="pulse-dot"></span>&#xe01;&#xe33;&#xe25;&#xe31;&#xe07;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe15;&#xe33;&#xe41;&#xe2b;&#xe19;&#xe48;&#xe07;...
     </div>
-    <button class="btn-main btn-stop" id="btnStop" onclick="stopSharing()">
-      หยุดแชร์ ✋
+    <div class="warning-box">
+      &#x26A0;&#xFE0F; &#xe2d;&#xe22;&#xe48;&#xe32;&#xe1b;&#xe34;&#xe14; browser &#xe23;&#xe30;&#xe2b;&#xe27;&#xe48;&#xe32;&#xe07;&#xe40;&#xe14;&#xe34;&#xe19;&#xe17;&#xe32;&#xe07;
+    </div>
+    <button class="btn-main btn-stop" onclick="stopSharing()">
+      &#xe2b;&#xe22;&#xe38;&#xe14;&#xe41;&#xe0a;&#xe23;&#xe4c; &#x270B;
     </button>
     <div class="update-time" id="lastUpdate"></div>
   </div>
 
-  <!-- State: Stopped -->
+  <!-- State: Stopped / Expired -->
   <div id="stateStopped" style="display:none">
-    <div class="status-msg">✅ หยุดแชร์แล้ว</div>
-    <div class="status-sub">คุณสามารถปิดหน้านี้ได้</div>
+    <div class="status-msg">&#x2705; &#xe01;&#xe32;&#xe23;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe2a;&#xe34;&#xe49;&#xe19;&#xe2a;&#xe38;&#xe14;</div>
+    <div class="status-sub">&#xe04;&#xe38;&#xe13;&#xe2a;&#xe32;&#xe21;&#xe32;&#xe23;&#xe16;&#xe1b;&#xe34;&#xe14;&#xe2b;&#xe19;&#xe49;&#xe32;&#xe19;&#xe35;&#xe49;&#xe44;&#xe14;&#xe49;</div>
   </div>
 
   <!-- State: Error -->
   <div id="stateError" style="display:none">
-    <div class="error-icon">❌</div>
+    <div class="error-icon">&#x274C;</div>
     <div class="error-msg" id="errorText"></div>
     <div class="error-detail" id="errorDetail"></div>
     <div style="margin-top: 32px;">
       <button class="btn-main btn-start" style="height:auto;min-height:80px;font-size:24px;" onclick="location.reload()">
-        ลองใหม่ 🔄
+        &#xe25;&#xe2d;&#xe07;&#xe43;&#xe2b;&#xe21;&#xe48; &#x1F504;
       </button>
     </div>
   </div>
@@ -174,25 +189,26 @@
 </div>
 
 <script>
-var UUID = "{{ uuid }}";
-var UPDATE_URL = "/driver/track/" + UUID + "/update";
-var STOP_URL = "/driver/track/" + UUID + "/stop";
-var watchId, updateInterval;
+var BOOKING_ID = "{{ booking_id }}";
+var PING_URL = "/driver/track/" + BOOKING_ID + "/ping";
+var STOP_URL = "/driver/track/" + BOOKING_ID + "/stop";
+
+var MAX_DURATION_MS = 8 * 60 * 60 * 1000; // 8 hours
+var PING_INTERVAL_MS = 30000; // 30 seconds
+
+var watchId, pingTimer, autoStopTimer;
 var sharing = false;
+var startedAt = null;
 var lastLat, lastLng;
 
 // Booking info
 (function() {
   var nameEl = document.getElementById('customerName');
   var detailEl = document.getElementById('bookingDetail');
-  var name = "{{ name }}";
-  var pickup = "{{ pickup }}";
-  var time = "{{ time }}";
-  nameEl.textContent = name ? "🚐 " + name : "🚐 Transfer";
-  var details = [];
-  if (pickup) details.push("📍 " + pickup);
-  if (time) details.push("⏰ " + time);
-  detailEl.textContent = details.join("  |  ") || "";
+  var name = "{{ customer_name }}";
+  var time = "{{ pickup_time }}";
+  nameEl.textContent = name ? "\uD83D\uDE90 " + name : "\uD83D\uDE90 Transfer";
+  if (time) detailEl.textContent = "\u23F0 " + time;
 })();
 
 function showState(id) {
@@ -201,18 +217,19 @@ function showState(id) {
   });
 }
 
-function sendUpdate(lat, lng, accuracy) {
-  fetch(UPDATE_URL, {
+function sendPing(lat, lng, accuracy) {
+  fetch(PING_URL, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({lat: lat, lng: lng, accuracy: accuracy})
   }).then(function(r) { return r.json(); }).then(function(j) {
     if (j.updated_at) {
       var t = j.updated_at.split('T')[1];
-      if (t) document.getElementById('lastUpdate').textContent = "อัพเดทล่าสุด: " + t.substring(0, 8);
+      if (t) document.getElementById('lastUpdate').textContent =
+        "\u0E2D\u0E31\u0E1E\u0E40\u0E14\u0E17\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14: " + t.substring(0, 8);
     }
   }).catch(function(e) {
-    console.error('Update failed:', e);
+    console.error('Ping failed:', e);
   });
 }
 
@@ -223,17 +240,23 @@ function onPosition(pos) {
 
   if (!sharing) {
     sharing = true;
+    startedAt = Date.now();
+    // Auto-stop after 8 hours
+    autoStopTimer = setTimeout(function() {
+      stopSharing();
+      showState('stateStopped');
+    }, MAX_DURATION_MS);
   }
   showState('stateActive');
-  sendUpdate(lastLat, lastLng, acc);
+  sendPing(lastLat, lastLng, acc);
 }
 
 function onError(err) {
-  var msg = 'GPS ผิดพลาด';
-  var detail = 'กรุณาลองใหม่';
-  if (err.code === 1) { msg = 'GPS ถูกปฏิเสธ'; detail = 'กรุณาอนุญาตการเข้าถึงตำแหน่งในการตั้งค่าเบราว์เซอร์'; }
-  if (err.code === 2) { msg = 'GPS ไม่พร้อมใช้งาน'; detail = 'กรุณาลองใหม่ในที่โล่ง'; }
-  if (err.code === 3) { msg = 'GPS timeout'; detail = 'กรุณาลองใหม่'; }
+  var msg = 'GPS \u0E1C\u0E34\u0E14\u0E1E\u0E25\u0E32\u0E14';
+  var detail = '\u0E01\u0E23\u0E38\u0E13\u0E32\u0E25\u0E2D\u0E07\u0E43\u0E2B\u0E21\u0E48';
+  if (err.code === 1) { msg = 'GPS \u0E16\u0E39\u0E01\u0E1B\u0E0F\u0E34\u0E40\u0E2A\u0E18'; detail = '\u0E01\u0E23\u0E38\u0E13\u0E32\u0E2D\u0E19\u0E38\u0E0D\u0E32\u0E15\u0E01\u0E32\u0E23\u0E40\u0E02\u0E49\u0E32\u0E16\u0E36\u0E07\u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07\u0E43\u0E19\u0E01\u0E32\u0E23\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32\u0E40\u0E1A\u0E23\u0E32\u0E27\u0E4C\u0E40\u0E0B\u0E2D\u0E23\u0E4C'; }
+  if (err.code === 2) { msg = 'GPS \u0E44\u0E21\u0E48\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E43\u0E0A\u0E49\u0E07\u0E32\u0E19'; detail = '\u0E01\u0E23\u0E38\u0E13\u0E32\u0E25\u0E2D\u0E07\u0E43\u0E2B\u0E21\u0E48\u0E43\u0E19\u0E17\u0E35\u0E48\u0E42\u0E25\u0E48\u0E07'; }
+  if (err.code === 3) { msg = 'GPS timeout'; detail = '\u0E01\u0E23\u0E38\u0E13\u0E32\u0E25\u0E2D\u0E07\u0E43\u0E2B\u0E21\u0E48'; }
   document.getElementById('errorText').textContent = msg;
   document.getElementById('errorDetail').textContent = detail;
   showState('stateError');
@@ -241,21 +264,9 @@ function onError(err) {
 
 function startSharing() {
   showState('stateLoading');
-  initGPS();
-}
-
-function stopSharing() {
-  sharing = false;
-  if (watchId) navigator.geolocation.clearWatch(watchId);
-  if (updateInterval) clearInterval(updateInterval);
-  fetch(STOP_URL, {method: 'POST'});
-  showState('stateStopped');
-}
-
-function initGPS() {
   if (!navigator.geolocation) {
-    document.getElementById('errorText').textContent = 'เบราว์เซอร์ไม่รองรับ GPS';
-    document.getElementById('errorDetail').textContent = 'กรุณาใช้ Chrome หรือ Safari';
+    document.getElementById('errorText').textContent = '\u0E40\u0E1A\u0E23\u0E32\u0E27\u0E4C\u0E40\u0E0B\u0E2D\u0E23\u0E4C\u0E44\u0E21\u0E48\u0E23\u0E2D\u0E07\u0E23\u0E31\u0E1A GPS';
+    document.getElementById('errorDetail').textContent = '\u0E01\u0E23\u0E38\u0E13\u0E32\u0E43\u0E0A\u0E49 Chrome \u0E2B\u0E23\u0E37\u0E2D Safari';
     showState('stateError');
     return;
   }
@@ -264,14 +275,21 @@ function initGPS() {
     timeout: 20000,
     maximumAge: 0
   });
-  updateInterval = setInterval(function() {
+  // Periodic ping even if position doesn't change
+  pingTimer = setInterval(function() {
     if (!sharing || !lastLat) return;
-    sendUpdate(lastLat, lastLng, null);
-  }, 60000);
+    sendPing(lastLat, lastLng, null);
+  }, PING_INTERVAL_MS);
 }
 
-// Auto-start GPS on page load
-initGPS();
+function stopSharing() {
+  sharing = false;
+  if (watchId) navigator.geolocation.clearWatch(watchId);
+  if (pingTimer) clearInterval(pingTimer);
+  if (autoStopTimer) clearTimeout(autoStopTimer);
+  fetch(STOP_URL, {method: 'POST'});
+  showState('stateStopped');
+}
 </script>
 </body>
 </html>

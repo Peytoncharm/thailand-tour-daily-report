@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 import requests
 from datetime import datetime, timezone, timedelta
 from flask import Blueprint, request, jsonify, render_template
@@ -10,197 +11,317 @@ driver_bp = Blueprint("driver", __name__)
 
 ICT = timezone(timedelta(hours=7))
 
-# In-memory tracking sessions: {uuid: {lat, lng, accuracy, updated_at, name, pickup, time, active}}
-tracking_sessions = {}
-
-# LINE debug config (kept for /driver/debug endpoint)
 TRANSFER_LINE_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
-TRANSFER_LINE_GROUP_ID = "C03b8de018aa2076157d032bc9b0ae279"
-TEAM_NOTIFY_GROUP_ID = "C9ff8de09378cba9f1a8a53a04b707a0a"
 BASE_URL = "https://thailand-tour-daily-report.onrender.com"
 
+# In-memory tracking sessions keyed by booking_id (Zoho record ID)
+# {booking_id: {lat, lng, accuracy, updated_at, started_at,
+#               page_opened_at, customer_name, pickup_location, pickup_time,
+#               line_user_id, active, notified, watchdog_fired}}
+tracking_sessions = {}
+
+SESSION_TTL_HOURS = 8
+
 
 # ---------------------------------------------------------------------------
-# Debug endpoint (kept from previous version)
+# Helpers
 # ---------------------------------------------------------------------------
 
-@driver_bp.route("/driver/debug", methods=["GET"])
-def driver_debug():
-    """Debug endpoint: verify LINE token identity and group push ability."""
-    info = {}
-    token_prefix = TRANSFER_LINE_TOKEN[:8] if TRANSFER_LINE_TOKEN else "(empty)"
-    info["token_prefix"] = token_prefix
-    info["group_id"] = TRANSFER_LINE_GROUP_ID
-    info["active_sessions"] = len([s for s in tracking_sessions.values() if s.get("active")])
+def _cleanup_stale():
+    """Remove sessions older than SESSION_TTL_HOURS."""
+    cutoff = datetime.now(ICT) - timedelta(hours=SESSION_TTL_HOURS)
+    stale = [
+        k for k, v in tracking_sessions.items()
+        if v.get("page_opened_at") and v["page_opened_at"] < cutoff
+    ]
+    for k in stale:
+        del tracking_sessions[k]
+    if stale:
+        logger.info(f"[DRIVER-TRACK] Cleaned up {len(stale)} stale sessions")
 
+
+def _line_push(to, text):
+    """Send a LINE push message via TRANSFER_LINE_TOKEN. Returns True on success."""
+    if not TRANSFER_LINE_TOKEN or not to:
+        return False
     try:
-        bot_res = requests.get(
-            "https://api.line.me/v2/bot/info",
-            headers={"Authorization": f"Bearer {TRANSFER_LINE_TOKEN}"},
-            timeout=10
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {TRANSFER_LINE_TOKEN}",
+            },
+            json={"to": to, "messages": [{"type": "text", "text": text}]},
+            timeout=10,
         )
-        info["bot_info_status"] = bot_res.status_code
-        info["bot_info"] = bot_res.json() if bot_res.status_code == 200 else bot_res.text
+        if resp.status_code == 200:
+            logger.info(f"[DRIVER-TRACK] LINE push OK to {to[:10]}...")
+            return True
+        else:
+            logger.error(f"[DRIVER-TRACK] LINE push failed {resp.status_code}: {resp.text}")
+            return False
     except Exception as e:
-        info["bot_info_error"] = str(e)
+        logger.error(f"[DRIVER-TRACK] LINE push exception: {e}")
+        return False
 
+
+def _fetch_booking_and_provider(booking_id):
+    """Look up booking from Zoho, then fetch provider Line_User_ID.
+    Returns (customer_name, pickup_time, line_user_id) or (None, None, None).
+    """
     try:
-        group_res = requests.get(
-            f"https://api.line.me/v2/bot/group/{TRANSFER_LINE_GROUP_ID}/summary",
-            headers={"Authorization": f"Bearer {TRANSFER_LINE_TOKEN}"},
-            timeout=10
+        from zoho_thailand import _get_access_token, ZOHO_API_BASE
+        token = _get_access_token()
+        if not token:
+            return None, None, None
+
+        # Get booking
+        resp = requests.get(
+            f"{ZOHO_API_BASE}/Koh_Chang_Orders/{booking_id}",
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+            params={"fields": "Name,Last_Name,Pickup_Date_Time,Pickup_Time,Provider_List"},
+            timeout=10,
         )
-        info["group_summary_status"] = group_res.status_code
-        info["group_summary"] = group_res.json() if group_res.status_code == 200 else group_res.text
+        if resp.status_code != 200:
+            logger.warning(f"[DRIVER-TRACK] Booking {booking_id} fetch failed: {resp.status_code}")
+            return None, None, None
+
+        booking = resp.json().get("data", [{}])[0]
+        name = (booking.get("Name") or "").strip()
+        last = (booking.get("Last_Name") or "").strip()
+        customer = f"{name} {last}".strip() if last else name
+
+        pt = booking.get("Pickup_Time") or ""
+        if not pt:
+            pdt = booking.get("Pickup_Date_Time") or ""
+            if "T" in pdt:
+                pt = pdt.split("T")[1][:5]
+
+        provider_list = booking.get("Provider_List")
+        if not provider_list or not isinstance(provider_list, dict):
+            return customer, pt, None
+
+        provider_id = provider_list.get("id")
+        if not provider_id:
+            return customer, pt, None
+
+        # Get provider Line_User_ID
+        resp2 = requests.get(
+            f"{ZOHO_API_BASE}/Providers/{provider_id}",
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+            params={"fields": "Name,Line_User_ID"},
+            timeout=10,
+        )
+        if resp2.status_code != 200:
+            return customer, pt, None
+
+        prov = resp2.json().get("data", [{}])[0]
+        line_id = (prov.get("Line_User_ID") or "").strip()
+        return customer, pt, line_id if line_id else None
+
     except Exception as e:
-        info["group_summary_error"] = str(e)
+        logger.error(f"[DRIVER-TRACK] Zoho lookup error: {e}")
+        return None, None, None
 
-    return jsonify(info), 200
+
+def _watchdog_check(booking_id):
+    """Called 5 minutes after page_opened. If no first ping arrived, alert team."""
+    session = tracking_sessions.get(booking_id)
+    if not session:
+        return
+    if session.get("started_at"):
+        return  # First ping arrived, normal flow happened
+    if session.get("watchdog_fired"):
+        return  # Already sent alert
+
+    session["watchdog_fired"] = True
+    customer = session.get("customer_name") or "(unknown)"
+    pickup_time = session.get("pickup_time") or ""
+    line_user_id = session.get("line_user_id")
+
+    msg = (
+        f"\u26a0\ufe0f \u0e04\u0e19\u0e02\u0e31\u0e1a\u0e40\u0e1b\u0e34\u0e14\u0e25\u0e34\u0e07\u0e01\u0e4c"
+        f"\u0e41\u0e15\u0e48\u0e22\u0e31\u0e07\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49\u0e41\u0e0a\u0e23\u0e4c"
+        f"\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07"
+        f" \u2014 booking {customer}"
+    )
+    if pickup_time:
+        msg += f" \u0e40\u0e27\u0e25\u0e32 {pickup_time}"
+
+    if line_user_id:
+        _line_push(line_user_id, msg)
+        logger.info(f"[DRIVER-TRACK] Watchdog alert sent for {booking_id}")
+    else:
+        logger.warning(f"[DRIVER-TRACK] Watchdog: no line_user_id for {booking_id}, cannot alert")
 
 
 # ---------------------------------------------------------------------------
-# Driver tracking — share page (driver opens this)
+# Driver page — captures GPS (driver only)
 # ---------------------------------------------------------------------------
 
-@driver_bp.route("/driver/track/<uuid>", methods=["GET"])
-def driver_share_page(uuid):
-    """Serve the driver's location-sharing page."""
-    name = request.args.get("name", "")
-    pickup = request.args.get("pickup", "")
-    time_str = request.args.get("time", "")
+@driver_bp.route("/driver/track/<booking_id>", methods=["GET"])
+def driver_share_page(booking_id):
+    """Serve the driver's location-sharing page. Driver only."""
+    _cleanup_stale()
 
-    # Create session on first visit if it doesn't exist
-    if uuid not in tracking_sessions:
-        tracking_sessions[uuid] = {
+    now = datetime.now(ICT)
+
+    if booking_id not in tracking_sessions:
+        # Look up booking info from Zoho
+        customer, pickup_time, line_user_id = _fetch_booking_and_provider(booking_id)
+
+        tracking_sessions[booking_id] = {
             "lat": None,
             "lng": None,
             "accuracy": None,
             "updated_at": None,
-            "name": name,
-            "pickup": pickup,
-            "time": time_str,
+            "started_at": None,
+            "page_opened_at": now,
+            "customer_name": customer or "",
+            "pickup_location": "",
+            "pickup_time": pickup_time or "",
+            "line_user_id": line_user_id,
             "active": True,
             "notified": False,
+            "watchdog_fired": False,
         }
-        logger.info(f"[DRIVER-TRACK] Session created: uuid={uuid}, name={name}, pickup={pickup}")
+        logger.info(
+            f"[DRIVER-TRACK] Session created: booking={booking_id}, "
+            f"customer={customer}, line_id={line_user_id and line_user_id[:10]}"
+        )
+
+        # Start 5-minute watchdog timer
+        timer = threading.Timer(300, _watchdog_check, args=[booking_id])
+        timer.daemon = True
+        timer.start()
+        logger.info(f"[DRIVER-TRACK] Watchdog timer started for {booking_id} (5 min)")
+
     else:
-        # Update booking info if provided (in case of re-open with params)
-        if name:
-            tracking_sessions[uuid]["name"] = name
-        if pickup:
-            tracking_sessions[uuid]["pickup"] = pickup
-        if time_str:
-            tracking_sessions[uuid]["time"] = time_str
-        # Re-activate if driver re-opens
-        tracking_sessions[uuid]["active"] = True
-        logger.info(f"[DRIVER-TRACK] Session re-opened: uuid={uuid}")
+        session = tracking_sessions[booking_id]
+        session["active"] = True
+        logger.info(f"[DRIVER-TRACK] Session re-opened: booking={booking_id}")
 
-    return render_template("driver_share.html", uuid=uuid, name=name, pickup=pickup, time=time_str)
+    session = tracking_sessions[booking_id]
+    return render_template(
+        "driver_share.html",
+        booking_id=booking_id,
+        customer_name=session.get("customer_name") or "",
+        pickup_time=session.get("pickup_time") or "",
+    )
 
 
 # ---------------------------------------------------------------------------
-# Driver tracking — GPS updates from driver's browser
+# Driver GPS pings
 # ---------------------------------------------------------------------------
 
-@driver_bp.route("/driver/track/<uuid>/update", methods=["POST"])
-def driver_update(uuid):
+@driver_bp.route("/driver/track/<booking_id>/ping", methods=["POST"])
+def driver_ping(booking_id):
     """Receive GPS coordinates from driver's browser."""
     data = request.get_json(silent=True)
     if not data or "lat" not in data or "lng" not in data:
         return jsonify({"status": "error", "message": "Missing lat/lng"}), 400
 
-    if uuid not in tracking_sessions:
-        tracking_sessions[uuid] = {
-            "name": "", "pickup": "", "time": "", "active": True, "notified": False
+    now = datetime.now(ICT)
+
+    if booking_id not in tracking_sessions:
+        tracking_sessions[booking_id] = {
+            "lat": None, "lng": None, "accuracy": None, "updated_at": None,
+            "started_at": None, "page_opened_at": now,
+            "customer_name": "", "pickup_location": "", "pickup_time": "",
+            "line_user_id": None, "active": True, "notified": False,
+            "watchdog_fired": False,
         }
 
-    session = tracking_sessions[uuid]
-    if not session.get("active"):
-        return jsonify({"status": "stopped", "message": "Session stopped"}), 200
+    session = tracking_sessions[booking_id]
 
-    now = datetime.now(ICT).strftime("%Y-%m-%dT%H:%M:%S")
+    if not session.get("active"):
+        return jsonify({"status": "stopped"}), 200
+
     session["lat"] = data["lat"]
     session["lng"] = data["lng"]
     session["accuracy"] = data.get("accuracy")
-    session["updated_at"] = now
+    session["updated_at"] = now.strftime("%Y-%m-%dT%H:%M:%S")
 
-    logger.info(
-        f"[DRIVER-TRACK] Update: uuid={uuid}, "
-        f"lat={data['lat']:.6f}, lng={data['lng']:.6f}, "
-        f"accuracy={data.get('accuracy', '?')}m"
-    )
+    is_first = session.get("started_at") is None
 
-    # Send LINE notification to team on first GPS fix only
-    if not session.get("notified") and TRANSFER_LINE_TOKEN:
-        session["notified"] = True
-        view_url = f"{BASE_URL}/driver/track/{uuid}/view"
-        msg = (
-            "📍 คนขับเริ่มแชร์ตำแหน่ง\n"
-            f"👤 ลูกค้า: {session.get('name') or '(ไม่ระบุ)'}\n"
-            f"⏰ Pickup: {session.get('time') or '(ไม่ระบุ)'}\n"
-            f"📍 จาก: {session.get('pickup') or '(ไม่ระบุ)'}\n"
-            f"🗺️ ดูตำแหน่ง: {view_url}"
+    if is_first:
+        session["started_at"] = now
+        logger.info(
+            f"[DRIVER-TRACK] First ping: booking={booking_id}, "
+            f"lat={data['lat']:.6f}, lng={data['lng']:.6f}"
         )
-        try:
-            requests.post(
-                "https://api.line.me/v2/bot/message/push",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {TRANSFER_LINE_TOKEN}",
-                },
-                json={
-                    "to": TEAM_NOTIFY_GROUP_ID,
-                    "messages": [{"type": "text", "text": msg}],
-                },
-                timeout=5,
+
+        # Look up Zoho if we don't have info yet (edge case: ping arrived before page GET)
+        if not session.get("line_user_id") or not session.get("customer_name"):
+            customer, pickup_time, line_user_id = _fetch_booking_and_provider(booking_id)
+            if customer:
+                session["customer_name"] = customer
+            if pickup_time:
+                session["pickup_time"] = pickup_time
+            if line_user_id:
+                session["line_user_id"] = line_user_id
+
+        # Send team-view URL to driver's OA thread
+        line_user_id = session.get("line_user_id")
+        customer = session.get("customer_name") or "(unknown)"
+        team_url = f"{BASE_URL}/track/{booking_id}"
+
+        if line_user_id and not session.get("notified"):
+            msg = (
+                f"\U0001f4cd {customer} \u0e01\u0e33\u0e25\u0e31\u0e07\u0e41\u0e0a\u0e23\u0e4c"
+                f"\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07:\n"
+                f"{team_url}"
             )
-            logger.info(f"[DRIVER-TRACK] Team notified for uuid={uuid}")
-        except Exception as e:
-            logger.error(f"[DRIVER-TRACK] Team notify failed: {e}")
+            ok = _line_push(line_user_id, msg)
+            if ok:
+                session["notified"] = True
+    else:
+        logger.debug(
+            f"[DRIVER-TRACK] Ping: booking={booking_id}, "
+            f"lat={data['lat']:.6f}, lng={data['lng']:.6f}"
+        )
 
-    return jsonify({"status": "ok", "updated_at": now}), 200
+    return jsonify({"status": "ok", "started": is_first, "updated_at": session["updated_at"]}), 200
 
 
 # ---------------------------------------------------------------------------
-# Driver tracking — stop sharing
+# Driver stop
 # ---------------------------------------------------------------------------
 
-@driver_bp.route("/driver/track/<uuid>/stop", methods=["POST"])
-def driver_stop(uuid):
+@driver_bp.route("/driver/track/<booking_id>/stop", methods=["POST"])
+def driver_stop(booking_id):
     """Driver stops sharing location."""
-    if uuid in tracking_sessions:
-        tracking_sessions[uuid]["active"] = False
-        logger.info(f"[DRIVER-TRACK] Stopped: uuid={uuid}")
+    if booking_id in tracking_sessions:
+        tracking_sessions[booking_id]["active"] = False
+        logger.info(f"[DRIVER-TRACK] Stopped: booking={booking_id}")
     return jsonify({"status": "stopped"}), 200
 
 
 # ---------------------------------------------------------------------------
-# Team viewer — watch driver's location
+# Team viewer — read-only map (team only)
 # ---------------------------------------------------------------------------
 
-@driver_bp.route("/driver/track/<uuid>/view", methods=["GET"])
-def team_view_page(uuid):
-    """Serve the team's viewer page showing driver location on map."""
-    session = tracking_sessions.get(uuid, {})
-    name = session.get("name", "")
-    pickup = session.get("pickup", "")
-    time_str = session.get("time", "")
-    return render_template("driver_view.html", uuid=uuid, name=name, pickup=pickup, time=time_str)
+@driver_bp.route("/track/<booking_id>", methods=["GET"])
+def team_view_page(booking_id):
+    """Serve the team's read-only map viewer. No GPS capture."""
+    session = tracking_sessions.get(booking_id, {})
+    return render_template(
+        "driver_view.html",
+        booking_id=booking_id,
+        customer_name=session.get("customer_name") or "",
+        pickup_time=session.get("pickup_time") or "",
+    )
 
 
-# ---------------------------------------------------------------------------
-# Team viewer — JSON status endpoint (polled by viewer page)
-# ---------------------------------------------------------------------------
-
-@driver_bp.route("/driver/track/<uuid>/status", methods=["GET"])
-def driver_status(uuid):
-    """Return current driver location as JSON (polled by viewer page)."""
-    session = tracking_sessions.get(uuid)
+@driver_bp.route("/track/<booking_id>/data", methods=["GET"])
+def team_view_data(booking_id):
+    """Return current driver location as JSON (polled by team viewer)."""
+    session = tracking_sessions.get(booking_id)
     if not session or session.get("lat") is None:
         return jsonify({
             "status": "waiting",
-            "message": "Driver has not shared location yet",
-            "active": session.get("active", False) if session else False
+            "active": session.get("active", False) if session else False,
+            "customer_name": session.get("customer_name", "") if session else "",
         }), 200
 
     return jsonify({
@@ -210,7 +331,32 @@ def driver_status(uuid):
         "accuracy": session.get("accuracy"),
         "updated_at": session.get("updated_at"),
         "active": session.get("active", False),
-        "name": session.get("name", ""),
-        "pickup": session.get("pickup", ""),
-        "time": session.get("time", ""),
+        "customer_name": session.get("customer_name", ""),
+        "pickup_time": session.get("pickup_time", ""),
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# Debug endpoint
+# ---------------------------------------------------------------------------
+
+@driver_bp.route("/driver/debug", methods=["GET"])
+def driver_debug():
+    """Debug endpoint: list active sessions and config."""
+    _cleanup_stale()
+    sessions_summary = {}
+    for bid, s in tracking_sessions.items():
+        sessions_summary[bid] = {
+            "active": s.get("active"),
+            "has_location": s.get("lat") is not None,
+            "started_at": str(s.get("started_at") or ""),
+            "notified": s.get("notified"),
+            "watchdog_fired": s.get("watchdog_fired"),
+            "customer_name": s.get("customer_name"),
+        }
+    return jsonify({
+        "token_set": bool(TRANSFER_LINE_TOKEN),
+        "base_url": BASE_URL,
+        "active_sessions": len([s for s in tracking_sessions.values() if s.get("active")]),
+        "sessions": sessions_summary,
     }), 200
