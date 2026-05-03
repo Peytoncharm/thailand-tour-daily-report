@@ -1,3 +1,10 @@
+"""
+DEPRECATED as of 2026-05-03.
+Pre-pickup reminders are now handled by n8n workflow 2LdDPFybPPSGKvfp
+("Pre-Pickup Reminder Transfer (30 min)"). The /cron/pre-pickup-reminder
+endpoint in app.py is a no-op. This module is kept for reference only.
+"""
+
 import os
 import logging
 import uuid as _uuid
