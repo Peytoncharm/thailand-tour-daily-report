@@ -1,14 +1,15 @@
 """
 approach_watchdog.py
 ────────────────────
-Three cron endpoints that monitor driver approach GPS status
+Two cron endpoints that monitor driver approach GPS status
 and escalate when drivers don't open their tracking link.
+
+Timeline: T-6hr send link → T-5.5hr soft alert → T-5hr rebroadcast
 
 Blueprint: approach_watchdog_bp
 Endpoints:
-  /cron/approach-watchdog-soft        — pickup in ~4.5hr, no GPS → soft alert
-  /cron/approach-watchdog-hard        — pickup in ~4hr, no GPS → hard escalation
-  /cron/approach-auto-rebroadcast     — pickup in ~3hr, no ack → rebroadcast
+  /cron/approach-watchdog-soft        — pickup in ~5.5hr, no GPS → soft alert
+  /cron/approach-auto-rebroadcast     — pickup in ~5hr, soft-alerted, no GPS → rebroadcast
 
 Env vars:
   DRIVER_OPS_LINE_GROUP_ID  — LINE group for ops alerts
@@ -113,11 +114,11 @@ def _query_no_gps_bookings(
       - Chanel_of_booking != 'TEST' (filtered in Python, not COQL)
       - Provider_List is populated
 
-    Time math example (soft alert, start=255, end=285):
+    Time math example (soft alert, start=315, end=345):
       NOW = 06:00 ICT
-      Window = 10:15 to 10:45 ICT
-      A booking with pickup at 10:30 → MATCH (within window)
-      A booking with pickup at 11:00 → SKIP (caught next cycle)
+      Window = 11:15 to 11:45 ICT
+      A booking with pickup at 11:30 → MATCH (within window)
+      A booking with pickup at 12:00 → SKIP (caught next cycle)
 
     COQL handles the broad filter; Python does precise time-window
     math and != checks (COQL != is unreliable on custom modules).
@@ -179,18 +180,19 @@ def _query_no_gps_bookings(
 
 
 # ─────────────────────────────────────────────────────────────
-# Endpoint 1: Soft alert — pickup in 4hr15min to 4hr45min, no GPS
+# Endpoint 1: Soft alert — pickup in 5hr15min to 5hr45min, no GPS
 # ─────────────────────────────────────────────────────────────
 @approach_watchdog_bp.route("/cron/approach-watchdog-soft", methods=["GET", "POST"])
 def approach_watchdog_soft():
     """
     Cron: every 5 min.
-    Alert: driver got approach link but hasn't opened GPS yet.
-    Pickup is ~4.5 hours away — early warning to contact provider.
+    Alert: driver got approach link (T-6hr) but hasn't opened GPS.
+    Pickup is ~5.5 hours away — early warning to contact provider.
+    If no response within 30 min, rebroadcast endpoint takes over.
     """
     bookings = _query_no_gps_bookings(
-        minutes_from_now_start=255,   # now + 4hr15min
-        minutes_from_now_end=285,     # now + 4hr45min
+        minutes_from_now_start=315,   # now + 5hr15min
+        minutes_from_now_end=345,     # now + 5hr45min
         exclude_flag="Approach_Soft_Alerted",
     )
 
@@ -206,13 +208,18 @@ def approach_watchdog_soft():
             provider = prov.get("name") or prov.get("Name") or ""
 
         msg = (
-            f"\u26a0\ufe0f Approach GPS \u0e44\u0e21\u0e48\u0e40\u0e23\u0e34\u0e48\u0e21\n\n"
+            "\u26a0\ufe0f Driver GPS \u0e44\u0e21\u0e48\u0e40\u0e23\u0e34\u0e48\u0e21"
+            " \u2014 pickup \u0e2d\u0e35\u0e01 5.5 \u0e0a\u0e21.\n\n"
             f"\U0001f516 {name}\n"
             f"\u23f0 Pickup: {pickup_time}\n"
             f"\U0001f4cd {route}\n"
             f"\U0001f690 Provider: {provider}\n\n"
-            f"\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e22\u0e31\u0e07\u0e44\u0e21\u0e48\u0e40\u0e1b\u0e34\u0e14 GPS \u2014 pickup \u0e2d\u0e35\u0e01 ~4.5 \u0e0a\u0e21.\n"
-            f"\u0e01\u0e23\u0e38\u0e13\u0e32\u0e15\u0e34\u0e14\u0e15\u0e48\u0e2d provider"
+            "\u2757 \u0e16\u0e49\u0e32\u0e44\u0e21\u0e48\u0e15\u0e2d\u0e1a\u0e43\u0e19 30 "
+            "\u0e19\u0e32\u0e17\u0e35 \u0e23\u0e30\u0e1a\u0e1a\u0e08\u0e30 rebroadcast "
+            "\u0e2b\u0e32\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e43\u0e2b\u0e21\u0e48"
+            "\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34\n"
+            "\u0e01\u0e23\u0e38\u0e13\u0e32\u0e15\u0e34\u0e14\u0e15\u0e48\u0e2d"
+            " provider \u0e17\u0e31\u0e19\u0e17\u0e35"
         )
 
         # ORDER: push LINE first, flag second.
@@ -226,60 +233,14 @@ def approach_watchdog_soft():
 
 
 # ─────────────────────────────────────────────────────────────
-# Endpoint 2: Hard alert — pickup in 3hr45min to 4hr15min, no GPS
-# ─────────────────────────────────────────────────────────────
-@approach_watchdog_bp.route("/cron/approach-watchdog-hard", methods=["GET", "POST"])
-def approach_watchdog_hard():
-    """
-    Cron: every 5 min.
-    Escalation: driver still hasn't started GPS after soft alert.
-    Pickup is ~4 hours away — must call provider immediately.
-    """
-    bookings = _query_no_gps_bookings(
-        minutes_from_now_start=225,   # now + 3hr45min
-        minutes_from_now_end=255,     # now + 4hr15min
-        exclude_flag="Approach_Hard_Alerted",
-    )
-
-    alerted = 0
-    for b in bookings:
-        pickup_dt = _parse_pickup_dt(b.get("Pickup_Date_Time") or "")
-        pickup_time = pickup_dt.strftime("%H:%M") if pickup_dt else "?"
-        name = (b.get("Name") or b.get("Last_Name") or "Unknown").strip()
-        route = b.get("Transfer_Route") or "No route"
-        provider = ""
-        prov = b.get("Provider_List")
-        if isinstance(prov, dict):
-            provider = prov.get("name") or prov.get("Name") or ""
-
-        msg = (
-            f"\U0001f6a8 URGENT \u2014 \u0e44\u0e21\u0e48\u0e21\u0e35 GPS \u0e08\u0e32\u0e01\u0e04\u0e19\u0e02\u0e31\u0e1a!\n\n"
-            f"\U0001f516 {name}\n"
-            f"\u23f0 Pickup: {pickup_time} (pickup \u0e2d\u0e35\u0e01 ~4 \u0e0a\u0e21.!)\n"
-            f"\U0001f4cd {route}\n"
-            f"\U0001f690 Provider: {provider}\n\n"
-            f"\u274c \u0e04\u0e19\u0e02\u0e31\u0e1a\u0e44\u0e21\u0e48\u0e40\u0e1b\u0e34\u0e14 GPS \u0e40\u0e25\u0e22\n"
-            f"\u26a1 \u0e15\u0e49\u0e2d\u0e07\u0e42\u0e17\u0e23\u0e2b\u0e32 provider \u0e17\u0e31\u0e19\u0e17\u0e35\n"
-            f"\u0e16\u0e49\u0e32\u0e44\u0e21\u0e48\u0e15\u0e2d\u0e1a\u0e20\u0e32\u0e22\u0e43\u0e19 1 \u0e0a\u0e21. \u2192 \u0e08\u0e30 rebroadcast \u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34"
-        )
-
-        # ORDER: push LINE first, flag second.
-        if _push_line_group(msg):
-            _flag_record(b["id"], "Approach_Hard_Alerted", "Yes")
-            alerted += 1
-
-    logger.info(f"[WATCHDOG-HARD] Alerted {alerted}/{len(bookings)}")
-    return jsonify({"status": "ok", "hard_alerted": alerted})
-
-
-# ─────────────────────────────────────────────────────────────
-# Endpoint 3: Auto-rebroadcast — pickup in 2hr45min to 3hr15min
+# Endpoint 2: Auto-rebroadcast — pickup in 4hr45min to 5hr15min
 # ─────────────────────────────────────────────────────────────
 @approach_watchdog_bp.route("/cron/approach-auto-rebroadcast", methods=["GET", "POST"])
 def approach_auto_rebroadcast():
     """
     Cron: every 5 min.
-    Last resort: driver completely unresponsive, pickup in ~3hr.
+    Last resort: driver completely unresponsive, pickup in ~5hr.
+    Only fires on bookings that already went through soft alert.
     Triggers DM V1 to find a replacement driver.
 
     Loop guard: Assignment_Status must NOT be 'broadcasting'.
@@ -291,7 +252,8 @@ def approach_auto_rebroadcast():
     today = now.strftime("%Y-%m-%d")
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # COQL: broad fetch — hard-alerted, approach sent
+    # COQL: broad fetch — soft-alerted, approach sent
+    # Gate: only rebroadcast bookings that went through soft alert
     # NOTE: No != operators — all exclusions in Python
     query = (
         f"select id, Name, Last_Name, Pickup_Date_Time, Transfer_Route, "
@@ -299,7 +261,7 @@ def approach_auto_rebroadcast():
         f"Approach_Acknowledged "
         f"from Koh_Chang_Orders "
         f"where Approach_Link_Sent = 'Yes' "
-        f"and Approach_Hard_Alerted = 'Yes' "
+        f"and Approach_Soft_Alerted = 'Yes' "
         f"and (Tour_Date = '{today}' or Tour_Date = '{tomorrow}') "
         f"limit 200"
     )
@@ -310,9 +272,9 @@ def approach_auto_rebroadcast():
         logger.error(f"[WATCHDOG-REBROADCAST] COQL failed: {e}")
         return jsonify({"status": "error", "detail": str(e)}), 500
 
-    # Time window: pickup in 2hr45min to 3hr15min from now
-    window_start = now + timedelta(minutes=165)
-    window_end = now + timedelta(minutes=195)
+    # Time window: pickup in 4hr45min to 5hr15min from now
+    window_start = now + timedelta(minutes=285)
+    window_end = now + timedelta(minutes=315)
 
     rebroadcast_count = 0
     skipped_broadcasting = 0
@@ -363,12 +325,15 @@ def approach_auto_rebroadcast():
 
         # Step 2: Notify group (best-effort)
         msg = (
-            f"\U0001f504 Auto-Rebroadcast \u0e2a\u0e48\u0e07\u0e41\u0e25\u0e49\u0e27\n\n"
+            "\U0001f504 Auto-Rebroadcast \u0e2a\u0e48\u0e07\u0e41\u0e25\u0e49\u0e27\n\n"
             f"\U0001f516 {name}\n"
-            f"\u23f0 Pickup: {pickup_time} (pickup \u0e2d\u0e35\u0e01 ~3 \u0e0a\u0e21.)\n"
+            f"\u23f0 Pickup: {pickup_time} (pickup \u0e2d\u0e35\u0e01 5 \u0e0a\u0e21.)\n"
             f"\U0001f4cd {route}\n\n"
-            f"Provider \u0e40\u0e14\u0e34\u0e21\u0e44\u0e21\u0e48\u0e15\u0e2d\u0e1a GPS \u2192 broadcast \u0e2b\u0e32\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e43\u0e2b\u0e21\u0e48\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34\n"
-            f"\u0e16\u0e49\u0e32\u0e21\u0e35\u0e04\u0e19\u0e23\u0e31\u0e1a\u0e08\u0e30 assign \u0e17\u0e31\u0e19\u0e17\u0e35"
+            "Provider \u0e40\u0e14\u0e34\u0e21\u0e44\u0e21\u0e48\u0e15\u0e2d\u0e1a GPS"
+            " \u2192 broadcast \u0e2b\u0e32\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e43\u0e2b\u0e21\u0e48"
+            "\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34\n"
+            "\u0e16\u0e49\u0e32\u0e21\u0e35\u0e04\u0e19\u0e23\u0e31\u0e1a\u0e08\u0e30"
+            " assign \u0e17\u0e31\u0e19\u0e17\u0e35"
         )
         _push_line_group(msg)
 
