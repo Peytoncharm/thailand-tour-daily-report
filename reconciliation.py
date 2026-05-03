@@ -12,7 +12,7 @@ REPORT_STATUSES = ["Awaiting Payment", "Quote Sent", "Booking Completed", "In Re
 FIELDS = (
     "Name,Last_Name,Package,Status,Total_Amount,Net_Cost,"
     "Total_Profit_Cost,Payment_Method,Tour_Date,Number_of_People,"
-    "Provider_Payment_Status,Modified_Time"
+    "Provider_Payment_Status,Modified_Time,Chanel_of_booking"
 )
 
 PAYMENT_ICONS = {
@@ -34,6 +34,8 @@ def fetch_today_orders() -> list:
     for r in records:
         mod_time = r.get("Modified_Time") or ""
         if not mod_time.startswith(today_str):
+            continue
+        if (r.get("Chanel_of_booking") or "").upper() == "TEST":
             continue
         status = (r.get("Status") or "").strip()
         if status not in REPORT_STATUSES:
