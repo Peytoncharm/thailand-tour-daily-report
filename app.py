@@ -1,7 +1,8 @@
 import os
 import logging
 import threading
-from flask import Flask, jsonify
+import requests as _requests
+from flask import Flask, jsonify, request
 
 logging.basicConfig(
     level=logging.INFO,
@@ -491,7 +492,7 @@ def admin_send_bulk_line():
 
     for uid in recipients:
         try:
-            resp = requests.post(
+            resp = _requests.post(
                 "https://api.line.me/v2/bot/message/push",
                 headers={
                     "Authorization": f"Bearer {token}",
