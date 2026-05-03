@@ -15,6 +15,9 @@ app = Flask(__name__)
 from driver_location import driver_bp
 app.register_blueprint(driver_bp)
 
+from approach_watchdog import approach_watchdog_bp
+app.register_blueprint(approach_watchdog_bp)
+
 
 @app.route("/", methods=["GET"])
 def health():

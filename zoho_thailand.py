@@ -133,6 +133,48 @@ def zoho_search(module: str, criteria: str, fields: str = None, page: int = 1) -
         return []
 
 
+def zoho_update_record(module: str, record_id: str, data: dict) -> dict:
+    """Update a single record in a Zoho CRM module. Returns response dict."""
+    global _access_token
+    token = _get_access_token()
+    if not token:
+        raise RuntimeError("Failed to obtain Zoho access token")
+
+    payload = {"data": [data], "trigger": []}
+
+    try:
+        resp = requests.put(
+            f"{ZOHO_API_BASE}/{module}/{record_id}",
+            headers={
+                "Authorization": f"Zoho-oauthtoken {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=15,
+        )
+        if resp.status_code == 401:
+            _access_token = None
+            token = _get_access_token()
+            if not token:
+                raise RuntimeError("Failed to refresh Zoho token")
+            resp = requests.put(
+                f"{ZOHO_API_BASE}/{module}/{record_id}",
+                headers={
+                    "Authorization": f"Zoho-oauthtoken {token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=15,
+            )
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"Zoho update failed {resp.status_code}: {resp.text}")
+        result = resp.json()
+        logger.info(f"[ZOHO-TH] Updated {module}/{record_id}")
+        return result
+    except requests.RequestException as e:
+        raise RuntimeError(f"Zoho update exception: {e}")
+
+
 def zoho_coql(query: str) -> list:
     """Execute a COQL query against Zoho CRM. Returns list of records."""
     global _access_token
