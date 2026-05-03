@@ -127,12 +127,19 @@
 <body>
 
 <div class="driver-only-bar">
+  {% if journey == 'approach' %}
+  &#x1F697; &#xe40;&#xe14;&#xe34;&#xe19;&#xe17;&#xe32;&#xe07;&#xe21;&#xe32;&#xe23;&#xe31;&#xe1a;&#xe25;&#xe39;&#xe01;&#xe04;&#xe49;&#xe32;
+  {% else %}
   &#x1F6D1; &#xe2b;&#xe19;&#xe49;&#xe32;&#xe19;&#xe35;&#xe49;&#xe2a;&#xe33;&#xe2b;&#xe23;&#xe31;&#xe1a;&#xe04;&#xe19;&#xe02;&#xe31;&#xe1a;&#xe40;&#xe17;&#xe48;&#xe32;&#xe19;&#xe31;&#xe49;&#xe19;
+  {% endif %}
 </div>
 
 <div class="booking-bar">
   <div class="info" id="customerName"></div>
   <div class="sub" id="bookingDetail"></div>
+  {% if journey == 'approach' %}
+  <div class="sub" style="color:#1565c0;margin-top:4px;">&#xe17;&#xe35;&#xe21;&#xe08;&#xe30;&#xe40;&#xe2b;&#xe47;&#xe19;&#xe27;&#xe48;&#xe32;&#xe04;&#xe38;&#xe13;&#xe01;&#xe33;&#xe25;&#xe31;&#xe07;&#xe21;&#xe32;&#xe23;&#xe31;&#xe1a;&#xe25;&#xe39;&#xe01;&#xe04;&#xe49;&#xe32;</div>
+  {% endif %}
 </div>
 
 <div class="main">
@@ -199,13 +206,25 @@
 
 <script>
 var BOOKING_ID = "{{ booking_id }}";
+var JOURNEY = "{{ journey }}";
+var PICKUP_ISO = "{{ pickup_datetime_iso }}";
 var PING_URL = "/driver/track/" + BOOKING_ID + "/ping";
 var STOP_URL = "/driver/track/" + BOOKING_ID + "/stop";
 
 var MAX_DURATION_MS = 8 * 60 * 60 * 1000; // 8 hours
 var PING_INTERVAL_MS = 30000; // 30 seconds
 
-var watchId, pingTimer, autoStopTimer;
+// For approach journey: auto-stop at pickup time
+var APPROACH_STOP_MS = null;
+if (JOURNEY === 'approach' && PICKUP_ISO) {
+  var pickupDate = new Date(PICKUP_ISO);
+  if (!isNaN(pickupDate.getTime())) {
+    APPROACH_STOP_MS = pickupDate.getTime() - Date.now();
+    if (APPROACH_STOP_MS < 0) APPROACH_STOP_MS = null; // pickup already passed
+  }
+}
+
+var watchId, pingTimer, autoStopTimer, approachStopTimer;
 var sharing = false;
 var startedAt = null;
 var lastLat, lastLng;
@@ -230,7 +249,7 @@ function sendPing(lat, lng, accuracy) {
   fetch(PING_URL, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({lat: lat, lng: lng, accuracy: accuracy})
+    body: JSON.stringify({lat: lat, lng: lng, accuracy: accuracy, journey: JOURNEY})
   }).then(function(r) { return r.json(); }).then(function(j) {
     if (j.updated_at) {
       var t = j.updated_at.split('T')[1];
@@ -250,11 +269,20 @@ function onPosition(pos) {
   if (!sharing) {
     sharing = true;
     startedAt = Date.now();
-    // Auto-stop after 8 hours
-    autoStopTimer = setTimeout(function() {
-      doStop();
-      showState('stateExpired');
-    }, MAX_DURATION_MS);
+    // Auto-stop after 8 hours (transfer) or at pickup time (approach)
+    if (JOURNEY === 'approach' && APPROACH_STOP_MS) {
+      approachStopTimer = setTimeout(function() {
+        doStop();
+        document.getElementById('stateExpired').querySelector('.status-msg').textContent =
+          '\u2705 \u0E16\u0E36\u0E07\u0E40\u0E27\u0E25\u0E32\u0E23\u0E31\u0E1A\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32\u0E41\u0E25\u0E49\u0E27';
+        showState('stateExpired');
+      }, APPROACH_STOP_MS);
+    } else {
+      autoStopTimer = setTimeout(function() {
+        doStop();
+        showState('stateExpired');
+      }, MAX_DURATION_MS);
+    }
   }
   showState('stateActive');
   sendPing(lastLat, lastLng, acc);
@@ -302,6 +330,7 @@ function doStop() {
   if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
   if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
+  if (approachStopTimer) { clearTimeout(approachStopTimer); approachStopTimer = null; }
   fetch(STOP_URL, {method: 'POST'});
 }
 

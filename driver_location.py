@@ -65,15 +65,41 @@ def _line_push(to, text):
         return False
 
 
+def _update_zoho_approach_gps(booking_id, lat, lng, is_first_ping=False):
+    """Update Approach GPS fields on the Zoho booking. Best-effort, non-blocking."""
+    try:
+        from zoho_thailand import _get_access_token, ZOHO_API_BASE
+        token = _get_access_token()
+        if not token:
+            return
+        now_str = datetime.now(ICT).strftime("%Y-%m-%dT%H:%M:%S+07:00")
+        fields = {
+            "Approach_Last_GPS_Time": now_str,
+            "Approach_Last_GPS_Lat": round(lat, 8),
+            "Approach_Last_GPS_Lng": round(lng, 8),
+        }
+        if is_first_ping:
+            fields["Approach_Link_Opened"] = "Yes"
+        requests.put(
+            f"{ZOHO_API_BASE}/Koh_Chang_Orders/{booking_id}",
+            headers={"Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"},
+            json={"data": [fields], "trigger": []},
+            timeout=10,
+        )
+        logger.info(f"[APPROACH] Zoho GPS updated: booking={booking_id}, lat={lat:.6f}, lng={lng:.6f}")
+    except Exception as e:
+        logger.error(f"[APPROACH] Zoho GPS update error: {e}")
+
+
 def _fetch_booking_and_provider(booking_id):
     """Look up booking from Zoho, then fetch provider Line_User_ID.
-    Returns (customer_name, pickup_time, line_user_id) or (None, None, None).
+    Returns (customer_name, pickup_time, line_user_id, pickup_datetime_iso) or (None, None, None, None).
     """
     try:
         from zoho_thailand import _get_access_token, ZOHO_API_BASE
         token = _get_access_token()
         if not token:
-            return None, None, None
+            return None, None, None, None
 
         # Get booking
         resp = requests.get(
@@ -84,26 +110,25 @@ def _fetch_booking_and_provider(booking_id):
         )
         if resp.status_code != 200:
             logger.warning(f"[DRIVER-TRACK] Booking {booking_id} fetch failed: {resp.status_code}")
-            return None, None, None
+            return None, None, None, None
 
         booking = resp.json().get("data", [{}])[0]
         name = (booking.get("Name") or "").strip()
         last = (booking.get("Last_Name") or "").strip()
         customer = f"{name} {last}".strip() if last else name
 
+        pdt_iso = booking.get("Pickup_Date_Time") or ""
         pt = booking.get("Pickup_Time") or ""
-        if not pt:
-            pdt = booking.get("Pickup_Date_Time") or ""
-            if "T" in pdt:
-                pt = pdt.split("T")[1][:5]
+        if not pt and pdt_iso and "T" in pdt_iso:
+            pt = pdt_iso.split("T")[1][:5]
 
         provider_list = booking.get("Provider_List")
         if not provider_list or not isinstance(provider_list, dict):
-            return customer, pt, None
+            return customer, pt, None, pdt_iso
 
         provider_id = provider_list.get("id")
         if not provider_id:
-            return customer, pt, None
+            return customer, pt, None, pdt_iso
 
         # Get provider Line_User_ID
         resp2 = requests.get(
@@ -113,15 +138,15 @@ def _fetch_booking_and_provider(booking_id):
             timeout=10,
         )
         if resp2.status_code != 200:
-            return customer, pt, None
+            return customer, pt, None, pdt_iso
 
         prov = resp2.json().get("data", [{}])[0]
         line_id = (prov.get("Line_User_ID") or "").strip()
-        return customer, pt, line_id if line_id else None
+        return customer, pt, (line_id if line_id else None), pdt_iso
 
     except Exception as e:
         logger.error(f"[DRIVER-TRACK] Zoho lookup error: {e}")
-        return None, None, None
+        return None, None, None, None
 
 
 def _watchdog_check(booking_id):
@@ -164,11 +189,12 @@ def driver_share_page(booking_id):
     """Serve the driver's location-sharing page. Driver only."""
     _cleanup_stale()
 
+    journey = request.args.get("journey", "transfer")  # "approach" or "transfer"
     now = datetime.now(ICT)
 
     if booking_id not in tracking_sessions:
         # Look up booking info from Zoho
-        customer, pickup_time, line_user_id = _fetch_booking_and_provider(booking_id)
+        customer, pickup_time, line_user_id, pdt_iso = _fetch_booking_and_provider(booking_id)
 
         tracking_sessions[booking_id] = {
             "lat": None,
@@ -180,6 +206,7 @@ def driver_share_page(booking_id):
             "customer_name": customer or "",
             "pickup_location": "",
             "pickup_time": pickup_time or "",
+            "pickup_datetime_iso": pdt_iso or "",
             "line_user_id": line_user_id,
             "active": True,
             "notified": False,
@@ -187,19 +214,20 @@ def driver_share_page(booking_id):
         }
         logger.info(
             f"[DRIVER-TRACK] Session created: booking={booking_id}, "
-            f"customer={customer}, line_id={line_user_id and line_user_id[:10]}"
+            f"journey={journey}, customer={customer}, line_id={line_user_id and line_user_id[:10]}"
         )
 
-        # Start 5-minute watchdog timer
-        timer = threading.Timer(300, _watchdog_check, args=[booking_id])
-        timer.daemon = True
-        timer.start()
-        logger.info(f"[DRIVER-TRACK] Watchdog timer started for {booking_id} (5 min)")
+        # Start 5-minute watchdog timer (only for transfer journey)
+        if journey == "transfer":
+            timer = threading.Timer(300, _watchdog_check, args=[booking_id])
+            timer.daemon = True
+            timer.start()
+            logger.info(f"[DRIVER-TRACK] Watchdog timer started for {booking_id} (5 min)")
 
     else:
         session = tracking_sessions[booking_id]
         session["active"] = True
-        logger.info(f"[DRIVER-TRACK] Session re-opened: booking={booking_id}")
+        logger.info(f"[DRIVER-TRACK] Session re-opened: booking={booking_id}, journey={journey}")
 
     session = tracking_sessions[booking_id]
     return render_template(
@@ -207,6 +235,8 @@ def driver_share_page(booking_id):
         booking_id=booking_id,
         customer_name=session.get("customer_name") or "",
         pickup_time=session.get("pickup_time") or "",
+        journey=journey,
+        pickup_datetime_iso=session.get("pickup_datetime_iso") or "",
     )
 
 
@@ -221,6 +251,7 @@ def driver_ping(booking_id):
     if not data or "lat" not in data or "lng" not in data:
         return jsonify({"status": "error", "message": "Missing lat/lng"}), 400
 
+    journey = data.get("journey", "transfer")  # "approach" or "transfer"
     now = datetime.now(ICT)
 
     if booking_id not in tracking_sessions:
@@ -228,6 +259,7 @@ def driver_ping(booking_id):
             "lat": None, "lng": None, "accuracy": None, "updated_at": None,
             "started_at": None, "page_opened_at": now,
             "customer_name": "", "pickup_location": "", "pickup_time": "",
+            "pickup_datetime_iso": "",
             "line_user_id": None, "active": True, "notified": False,
             "watchdog_fired": False,
         }
@@ -249,21 +281,33 @@ def driver_ping(booking_id):
     if is_first:
         session["started_at"] = now
         logger.info(
-            f"[DRIVER-TRACK] First ping: booking={booking_id}, "
+            f"[DRIVER-TRACK] First ping: booking={booking_id}, journey={journey}, "
             f"lat={data['lat']:.6f}, lng={data['lng']:.6f}"
         )
 
-        # Look up Zoho if we don't have info yet (edge case: ping arrived before page GET)
+        # Look up Zoho if we don't have info yet
         if not session.get("line_user_id") or not session.get("customer_name"):
-            customer, pickup_time, line_user_id = _fetch_booking_and_provider(booking_id)
+            customer, pickup_time, line_user_id, pdt_iso = _fetch_booking_and_provider(booking_id)
             if customer:
                 session["customer_name"] = customer
             if pickup_time:
                 session["pickup_time"] = pickup_time
             if line_user_id:
                 session["line_user_id"] = line_user_id
+            if pdt_iso:
+                session["pickup_datetime_iso"] = pdt_iso
 
-        # Send team-view URL to driver's OA thread
+    # Journey-specific Zoho updates
+    if journey == "approach":
+        # Update Approach GPS fields in Zoho (async, non-blocking)
+        t = threading.Thread(
+            target=_update_zoho_approach_gps,
+            args=(booking_id, data["lat"], data["lng"], is_first),
+            daemon=True,
+        )
+        t.start()
+    elif journey == "transfer" and is_first:
+        # Transfer journey: send team-view URL on first ping only
         line_user_id = session.get("line_user_id")
         customer = session.get("customer_name") or "(unknown)"
         team_url = f"{BASE_URL}/track/{booking_id}"
@@ -277,9 +321,10 @@ def driver_ping(booking_id):
             ok = _line_push(line_user_id, msg)
             if ok:
                 session["notified"] = True
-    else:
+
+    if not is_first:
         logger.debug(
-            f"[DRIVER-TRACK] Ping: booking={booking_id}, "
+            f"[DRIVER-TRACK] Ping: booking={booking_id}, journey={journey}, "
             f"lat={data['lat']:.6f}, lng={data['lng']:.6f}"
         )
 
