@@ -168,8 +168,17 @@
     <div class="update-time" id="lastUpdate"></div>
   </div>
 
-  <!-- State: Stopped / Expired -->
+  <!-- State: Stopped -->
   <div id="stateStopped" style="display:none">
+    <div class="status-msg">&#x2705; &#xe2b;&#xe22;&#xe38;&#xe14;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe41;&#xe25;&#xe49;&#xe27;</div>
+    <div class="status-sub" style="margin-bottom:24px">&#xe2b;&#xe32;&#xe01;&#xe15;&#xe49;&#xe2d;&#xe07;&#xe01;&#xe32;&#xe23;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe2d;&#xe35;&#xe01;&#xe04;&#xe23;&#xe31;&#xe49;&#xe07; &#xe01;&#xe14;&#xe1b;&#xe38;&#xe48;&#xe21;&#xe14;&#xe49;&#xe32;&#xe19;&#xe25;&#xe48;&#xe32;&#xe07;</div>
+    <button class="btn-main btn-start" style="height:auto;min-height:100px;font-size:28px;" onclick="resumeSharing()">
+      &#xe40;&#xe23;&#xe34;&#xe48;&#xe21;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe2d;&#xe35;&#xe01;&#xe04;&#xe23;&#xe31;&#xe49;&#xe07; &#x1F4CD;
+    </button>
+  </div>
+
+  <!-- State: Expired (8hr auto-stop) -->
+  <div id="stateExpired" style="display:none">
     <div class="status-msg">&#x2705; &#xe01;&#xe32;&#xe23;&#xe41;&#xe0a;&#xe23;&#xe4c;&#xe2a;&#xe34;&#xe49;&#xe19;&#xe2a;&#xe38;&#xe14;</div>
     <div class="status-sub">&#xe04;&#xe38;&#xe13;&#xe2a;&#xe32;&#xe21;&#xe32;&#xe23;&#xe16;&#xe1b;&#xe34;&#xe14;&#xe2b;&#xe19;&#xe49;&#xe32;&#xe19;&#xe35;&#xe49;&#xe44;&#xe14;&#xe49;</div>
   </div>
@@ -212,7 +221,7 @@ var lastLat, lastLng;
 })();
 
 function showState(id) {
-  ['stateLoading','stateReady','stateActive','stateStopped','stateError'].forEach(function(s) {
+  ['stateLoading','stateReady','stateActive','stateStopped','stateExpired','stateError'].forEach(function(s) {
     document.getElementById(s).style.display = s === id ? '' : 'none';
   });
 }
@@ -243,8 +252,8 @@ function onPosition(pos) {
     startedAt = Date.now();
     // Auto-stop after 8 hours
     autoStopTimer = setTimeout(function() {
-      stopSharing();
-      showState('stateStopped');
+      doStop();
+      showState('stateExpired');
     }, MAX_DURATION_MS);
   }
   showState('stateActive');
@@ -283,12 +292,22 @@ function startSharing() {
 }
 
 function stopSharing() {
-  sharing = false;
-  if (watchId) navigator.geolocation.clearWatch(watchId);
-  if (pingTimer) clearInterval(pingTimer);
-  if (autoStopTimer) clearTimeout(autoStopTimer);
-  fetch(STOP_URL, {method: 'POST'});
+  if (!confirm('\u0E2B\u0E22\u0E38\u0E14\u0E41\u0E0A\u0E23\u0E4C\u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07\u0E43\u0E0A\u0E48\u0E2B\u0E23\u0E37\u0E2D\u0E44\u0E21\u0E48?')) return;
+  doStop();
   showState('stateStopped');
+}
+
+function doStop() {
+  sharing = false;
+  if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  if (autoStopTimer) { clearTimeout(autoStopTimer); autoStopTimer = null; }
+  fetch(STOP_URL, {method: 'POST'});
+}
+
+function resumeSharing() {
+  // Re-activate on backend by sending a fresh ping once GPS starts
+  startSharing();
 }
 </script>
 </body>

@@ -234,8 +234,10 @@ def driver_ping(booking_id):
 
     session = tracking_sessions[booking_id]
 
+    # Re-activate session if driver resumes after stop
     if not session.get("active"):
-        return jsonify({"status": "stopped"}), 200
+        session["active"] = True
+        logger.info(f"[DRIVER-TRACK] Session re-activated via ping: booking={booking_id}")
 
     session["lat"] = data["lat"]
     session["lng"] = data["lng"]
