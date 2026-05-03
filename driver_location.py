@@ -306,18 +306,30 @@ def driver_ping(booking_id):
             daemon=True,
         )
         t.start()
-    elif journey == "transfer" and is_first:
-        # Transfer journey: send team-view URL on first ping only
+
+    # Send team-viewer URL to driver's OA thread on first ping (both journeys)
+    if is_first:
         line_user_id = session.get("line_user_id")
         customer = session.get("customer_name") or "(unknown)"
+        pickup_time = session.get("pickup_time") or ""
         team_url = f"{BASE_URL}/track/{booking_id}"
 
         if line_user_id and not session.get("notified"):
-            msg = (
-                f"\U0001f4cd {customer} \u0e01\u0e33\u0e25\u0e31\u0e07\u0e41\u0e0a\u0e23\u0e4c"
-                f"\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07:\n"
-                f"{team_url}"
-            )
+            if journey == "approach":
+                msg = (
+                    f"\U0001f690 {customer} \u2014 "
+                    f"\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e40\u0e23\u0e34\u0e48\u0e21"
+                    f"\u0e40\u0e14\u0e34\u0e19\u0e17\u0e32\u0e07\u0e21\u0e32"
+                    f"\u0e23\u0e31\u0e1a\u0e25\u0e39\u0e01\u0e04\u0e49\u0e32\n"
+                    f"\u23f0 Pickup {pickup_time}\n"
+                    f"\u0e14\u0e39\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07: {team_url}"
+                )
+            else:
+                msg = (
+                    f"\U0001f4cd {customer} \u0e01\u0e33\u0e25\u0e31\u0e07\u0e41\u0e0a\u0e23\u0e4c"
+                    f"\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07:\n"
+                    f"{team_url}"
+                )
             ok = _line_push(line_user_id, msg)
             if ok:
                 session["notified"] = True
