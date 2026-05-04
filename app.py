@@ -416,62 +416,6 @@ def test_pre_pickup_reminder():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@app.route("/test/pa-line-debug", methods=["GET"])
-def test_pa_line_debug():
-    """Temporary debug endpoint — remove after setup."""
-    import requests as _req
-    token = os.environ.get("PA_LINE_TOKEN", "")
-    group_id = os.environ.get("MONTHLY_REPORT_LINE_GROUP_ID", "")
-
-    # Check bot info
-    bot_resp = _req.get(
-        "https://api.line.me/v2/bot/info",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=10,
-    )
-
-    # Try simple push
-    push_resp = _req.post(
-        "https://api.line.me/v2/bot/message/push",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-        },
-        json={
-            "to": group_id,
-            "messages": [{"type": "text", "text": "test"}],
-        },
-        timeout=10,
-    )
-
-    return jsonify({
-        "token_present": bool(token),
-        "token_prefix": token[:20] + "..." if token else "MISSING",
-        "group_id": group_id,
-        "bot_info_status": bot_resp.status_code,
-        "bot_info": bot_resp.json() if bot_resp.status_code == 200 else bot_resp.text,
-        "push_status": push_resp.status_code,
-        "push_response": push_resp.json() if push_resp.status_code != 200 else "OK",
-    })
-
-
-@app.route("/test/pa-webhook-capture", methods=["POST", "GET"])
-def pa_webhook_capture():
-    """Temp endpoint to capture Orathai PA group ID."""
-    from flask import request
-    if request.method == "GET":
-        return jsonify({"status": "ok"}), 200
-    body = request.get_json(silent=True) or {}
-    events = body.get("events", [])
-    for event in events:
-        source = event.get("source", {})
-        group_id = source.get("groupId") or source.get("roomId")
-        source_type = source.get("type", "unknown")
-        event_type = event.get("type", "unknown")
-        logger.info(f"[PA-CAPTURE] event={event_type} source={source_type} groupId={group_id}")
-    return jsonify({"status": "ok"}), 200
-
-
 # ---------------------------------------------------------------------------
 # One-shot broadcast message endpoint (admin use only)
 # ---------------------------------------------------------------------------
