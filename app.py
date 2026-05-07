@@ -40,7 +40,7 @@ def cron_daily_reconciliation():
             message = build_empty_report()
 
         status_code, response_text = send_line_message(
-            message, group_id=RECONCILIATION_LINE_GROUP_ID, token=KOHCHANG_LINE_TOKEN
+            message, group_id=RECONCILIATION_LINE_GROUP_ID, token=PA_LINE_TOKEN
         )
         logger.info(f"[CRON] LINE push status: {status_code}, message length: {len(message)}")
         return jsonify({"status": "ok", "message": "Daily reconciliation triggered"}), 200
@@ -323,8 +323,70 @@ def cron_daily_payment_register():
 def test_payment_register():
     """Test endpoint — returns JSON of what would be sent. NO LINE send."""
     try:
-        from payment_register import run_payment_register
+        from payment_register import (
+            run_payment_register, _filter_unpaid, _classify_orders,
+            _fetch_providers, _get_provider_info, _compute_due_date,
+            _parse_date, _get_amount, ORDER_FIELDS,
+        )
+        from zoho_thailand import zoho_get_records
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
 
+        today = datetime.now(ZoneInfo("Asia/Bangkok")).date()
+
+        # Step 1: Raw records
+        all_orders = zoho_get_records("Koh_Chang_Orders", fields=ORDER_FIELDS)
+        raw_count = len(all_orders)
+
+        # Step 2: Count Pending
+        pending_count = sum(
+            1 for r in all_orders
+            if (r.get("Provider_Payment_Status") or "").strip() == "Pending"
+        )
+
+        # Step 3: After _filter_unpaid
+        unpaid = _filter_unpaid(all_orders, today)
+        unpaid_count = len(unpaid)
+
+        # Step 4: Classify
+        provider_ids = set()
+        for o in unpaid:
+            pid, _ = _get_provider_info(o)
+            if pid:
+                provider_ids.add(pid)
+        providers = _fetch_providers(provider_ids)
+        due_today, overdue = _classify_orders(unpaid, providers, today)
+        future = [o for o in unpaid if o not in due_today and o not in overdue]
+
+        # Step 5: Sample records
+        samples = []
+        sample_names = ["wang", "tanja", "lucas"]
+        for r in all_orders:
+            name = (r.get("Name") or "").lower()
+            if any(s in name for s in sample_names) and len(samples) < 3:
+                pid, pname = _get_provider_info(r)
+                provider = providers.get(pid, {})
+                due_date = _compute_due_date(r, provider) if provider else None
+                amt, _ = _get_amount(r)
+                samples.append({
+                    "name": r.get("Name"),
+                    "tour_date": r.get("Tour_Date"),
+                    "provider_payment_status": r.get("Provider_Payment_Status"),
+                    "net_cost": r.get("Net_Cost"),
+                    "provider_name": pname,
+                    "computed_due_date": str(due_date) if due_date else None,
+                    "today": str(today),
+                    "classification": (
+                        "due_today" if due_date == today else
+                        "overdue" if due_date and due_date < today else
+                        "future" if due_date and due_date > today else
+                        "no_due_date"
+                    ),
+                    "has_provider_list": bool(r.get("Provider_List")),
+                    "channel": r.get("Chanel_of_booking"),
+                })
+
+        # Normal report
         message, stats = run_payment_register()
 
         return jsonify({
@@ -332,6 +394,16 @@ def test_payment_register():
             "stats": stats,
             "message_preview": message,
             "message_length": len(message),
+            "diagnostic": {
+                "1_raw_records": raw_count,
+                "2_pending_count": pending_count,
+                "3_unpaid_after_filter": unpaid_count,
+                "4_due_today": len(due_today),
+                "4_overdue": len(overdue),
+                "4_future": len(future),
+                "5_samples": samples,
+                "today": str(today),
+            }
         }), 200
     except Exception as e:
         logger.error(f"[TEST] Payment register error: {e}", exc_info=True)
