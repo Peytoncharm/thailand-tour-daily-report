@@ -380,17 +380,29 @@ def driver_ping(booking_id):
         if not session.get("team_notified"):
             pickup_loc = session.get("pickup_location") or ""
             dropoff_loc = session.get("dropoff_location") or ""
-            route = session.get("transfer_route") or ""
             provider_name = session.get("provider_name") or "(unknown)"
-            route_display = f"{pickup_loc} \u2192 {dropoff_loc}" if pickup_loc else route
+
+            # Short location names: first part before comma/room/soi
+            pickup_short = pickup_loc.split(",")[0].split(" room")[0].split(" Room")[0].strip() if pickup_loc else ""
+            dropoff_short = dropoff_loc.split(",")[0].split(" room")[0].split(" Room")[0].strip() if dropoff_loc else ""
+            route_line = f"{pickup_short} \u2192 {dropoff_short}" if pickup_short else session.get("transfer_route") or ""
+
+            # Extract date from pickup_datetime_iso (e.g. "2026-05-20T08:00:00+07:00")
+            pdt_iso = session.get("pickup_datetime_iso") or ""
+            pickup_date = ""
+            if pdt_iso and "T" in pdt_iso:
+                parts = pdt_iso.split("T")[0].split("-")
+                if len(parts) == 3:
+                    pickup_date = f"{int(parts[2])} {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][int(parts[1])-1]}"
+
+            pickup_display = f"{pickup_time} ({pickup_date})" if pickup_date else pickup_time
 
             team_msg = (
-                f"\U0001f4cd Driver \u0e40\u0e23\u0e34\u0e48\u0e21\u0e41\u0e0a\u0e23\u0e4c"
-                f"\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07\u0e41\u0e25\u0e49\u0e27\n"
-                f"\U0001f516 \u0e25\u0e39\u0e01\u0e04\u0e49\u0e32: {customer}\n"
-                f"\U0001f4cd \u0e40\u0e2a\u0e49\u0e19\u0e17\u0e32\u0e07: {route_display}\n"
-                f"\u23f0 Pickup: {pickup_time}\n"
-                f"\U0001f690 Driver: {provider_name}\n"
+                f"\U0001f690 {provider_name} \u2192 {customer}\n"
+                f"\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550"
+                f"\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n"
+                f"\U0001f4cd {route_line}\n"
+                f"\u23f0 Pickup: {pickup_display}\n"
                 f"\U0001f5fa\ufe0f \u0e14\u0e39\u0e15\u0e33\u0e41\u0e2b\u0e19\u0e48\u0e07: {team_url}"
             )
             ok = _push_line_group(team_msg)
