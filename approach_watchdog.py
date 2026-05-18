@@ -136,7 +136,8 @@ def _query_no_gps_bookings(
     query = (
         f"select id, Name, Last_Name, Pickup_Date_Time, Transfer_Route, "
         f"Provider_List, Approach_Last_GPS_Time, {exclude_flag}, "
-        f"Chanel_of_booking, Approach_Acknowledged, Assignment_Status "
+        f"Chanel_of_booking, Approach_Acknowledged, Assignment_Status, "
+        f"Type_of_Package "
         f"from Koh_Chang_Orders "
         f"where Approach_Link_Sent = 'Yes' "
         f"and Approach_Last_GPS_Time is null "
@@ -152,6 +153,10 @@ def _query_no_gps_bookings(
 
     results = []
     for r in records:
+        # Python filter: Private Transfer only (exclude Join Transfer etc.)
+        if (r.get("Type_of_Package") or "") != "Private Transfer":
+            continue
+
         # Python filter: exclude TEST bookings
         if (r.get("Chanel_of_booking") or "").upper() == "TEST":
             continue
@@ -258,7 +263,7 @@ def approach_auto_rebroadcast():
     query = (
         f"select id, Name, Last_Name, Pickup_Date_Time, Transfer_Route, "
         f"Provider_List, Assignment_Status, Chanel_of_booking, "
-        f"Approach_Acknowledged "
+        f"Approach_Acknowledged, Type_of_Package "
         f"from Koh_Chang_Orders "
         f"where Approach_Link_Sent = 'Yes' "
         f"and Approach_Soft_Alerted = 'Yes' "
@@ -280,6 +285,10 @@ def approach_auto_rebroadcast():
     skipped_broadcasting = 0
 
     for r in records:
+        # Python filter: Private Transfer only
+        if (r.get("Type_of_Package") or "") != "Private Transfer":
+            continue
+
         # Python filter: exclude TEST bookings
         if (r.get("Chanel_of_booking") or "").upper() == "TEST":
             continue
