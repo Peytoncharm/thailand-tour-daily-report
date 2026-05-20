@@ -21,7 +21,7 @@ TRANSFER_LINE_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
 TEAM_NOTIFY_GROUP_ID = "C9ff8de09378cba9f1a8a53a04b707a0a"
 BASE_URL = "https://thailand-tour-daily-report.onrender.com"
 
-TRANSFER_TYPES = {"Join Transfer", "Private Transfer"}
+TRANSFER_TYPES = {"Private Transfer"}
 
 ORDER_FIELDS = (
     "Name,Last_Name,Tour_Date,Type_of_Package,Pickup_Date_Time,Pickup_Time,"
