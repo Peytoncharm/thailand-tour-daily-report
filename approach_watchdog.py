@@ -22,7 +22,7 @@ import requests
 from datetime import datetime, timezone, timedelta
 from flask import Blueprint, jsonify
 
-from zoho_thailand import zoho_coql, zoho_update_record
+from zoho_thailand import zoho_search, zoho_update_record
 
 logger = logging.getLogger(__name__)
 
@@ -111,53 +111,57 @@ def _query_no_gps_bookings(
         and NOW + minutes_from_now_end (in ICT)
       - Approach_Last_GPS_Time IS NULL (no GPS ping received)
       - exclude_flag field != 'Yes' (idempotency guard)
-      - Chanel_of_booking != 'TEST' (filtered in Python, not COQL)
+      - Chanel_of_booking != 'TEST' (filtered in Python)
       - Provider_List is populated
+      - Type_of_Package = 'Private Transfer'
 
-    Time math example (soft alert, start=315, end=345):
-      NOW = 06:00 ICT
-      Window = 11:15 to 11:45 ICT
-      A booking with pickup at 11:30 → MATCH (within window)
-      A booking with pickup at 12:00 → SKIP (caught next cycle)
-
-    COQL handles the broad filter; Python does precise time-window
-    math and != checks (COQL != is unreliable on custom modules).
+    Uses REST /search API (not COQL — token lacks COQL scope).
+    REST criteria can't check "is null", so we fetch all
+    Approach_Link_Sent=Yes bookings for today/tomorrow and
+    filter for null GPS + time window in Python.
     """
     now = _now_ict()
     today = now.strftime("%Y-%m-%d")
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Compute window boundaries as absolute ICT datetimes
     window_start = now + timedelta(minutes=minutes_from_now_start)
     window_end = now + timedelta(minutes=minutes_from_now_end)
 
-    # COQL: broad fetch — today/tomorrow, approach sent, no GPS
-    # NOTE: No != operators in COQL — all exclusions done in Python
-    query = (
-        f"select id, Name, Last_Name, Pickup_Date_Time, Transfer_Route, "
-        f"Provider_List, Approach_Last_GPS_Time, {exclude_flag}, "
-        f"Chanel_of_booking, Approach_Acknowledged, Assignment_Status, "
-        f"Type_of_Package "
-        f"from Koh_Chang_Orders "
-        f"where Approach_Link_Sent = 'Yes' "
-        f"and Approach_Last_GPS_Time is null "
-        f"and (Tour_Date = '{today}' or Tour_Date = '{tomorrow}') "
-        f"limit 200"
+    fields = (
+        "id,Name,Last_Name,Pickup_Date_Time,Transfer_Route,"
+        "Provider_List,Approach_Last_GPS_Time," + exclude_flag + ","
+        "Chanel_of_booking,Approach_Acknowledged,Assignment_Status,"
+        "Type_of_Package"
     )
 
-    try:
-        records = zoho_coql(query)
-    except Exception as e:
-        logger.error(f"[WATCHDOG] COQL failed: {e}")
-        return []
+    # REST search: fetch today's bookings with approach link sent
+    all_records = []
+    criteria_today = (
+        "(Approach_Link_Sent:equals:Yes)"
+        f"and(Tour_Date:equals:{today})"
+    )
+    all_records.extend(zoho_search("Koh_Chang_Orders", criteria_today, fields))
+
+    # Also fetch tomorrow's bookings (for late-night pickups)
+    criteria_tomorrow = (
+        "(Approach_Link_Sent:equals:Yes)"
+        f"and(Tour_Date:equals:{tomorrow})"
+    )
+    all_records.extend(zoho_search("Koh_Chang_Orders", criteria_tomorrow, fields))
+
+    logger.info(f"[WATCHDOG] REST search returned {len(all_records)} records")
 
     results = []
-    for r in records:
-        # Python filter: Private Transfer only (exclude Join Transfer etc.)
+    for r in all_records:
+        # Must have no GPS ping (REST can't filter "is null")
+        if r.get("Approach_Last_GPS_Time"):
+            continue
+
+        # Private Transfer only
         if (r.get("Type_of_Package") or "") != "Private Transfer":
             continue
 
-        # Python filter: exclude TEST bookings
+        # Exclude TEST bookings
         if (r.get("Chanel_of_booking") or "").upper() == "TEST":
             continue
 
@@ -175,7 +179,6 @@ def _query_no_gps_bookings(
         if pickup_dt is None:
             continue
 
-        # Core time check: is pickup within [window_start, window_end]?
         if pickup_dt < window_start or pickup_dt > window_end:
             continue
 
@@ -257,25 +260,23 @@ def approach_auto_rebroadcast():
     today = now.strftime("%Y-%m-%d")
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # COQL: broad fetch — soft-alerted, approach sent
-    # Gate: only rebroadcast bookings that went through soft alert
-    # NOTE: No != operators — all exclusions in Python
-    query = (
-        f"select id, Name, Last_Name, Pickup_Date_Time, Transfer_Route, "
-        f"Provider_List, Assignment_Status, Chanel_of_booking, "
-        f"Approach_Acknowledged, Type_of_Package "
-        f"from Koh_Chang_Orders "
-        f"where Approach_Link_Sent = 'Yes' "
-        f"and Approach_Soft_Alerted = 'Yes' "
-        f"and (Tour_Date = '{today}' or Tour_Date = '{tomorrow}') "
-        f"limit 200"
+    # REST search: soft-alerted bookings with approach link sent
+    fields = (
+        "id,Name,Last_Name,Pickup_Date_Time,Transfer_Route,"
+        "Provider_List,Assignment_Status,Chanel_of_booking,"
+        "Approach_Acknowledged,Type_of_Package"
     )
 
-    try:
-        records = zoho_coql(query)
-    except Exception as e:
-        logger.error(f"[WATCHDOG-REBROADCAST] COQL failed: {e}")
-        return jsonify({"status": "error", "detail": str(e)}), 500
+    records = []
+    for day in [today, tomorrow]:
+        criteria = (
+            "(Approach_Link_Sent:equals:Yes)"
+            "and(Approach_Soft_Alerted:equals:Yes)"
+            f"and(Tour_Date:equals:{day})"
+        )
+        records.extend(zoho_search("Koh_Chang_Orders", criteria, fields))
+
+    logger.info(f"[WATCHDOG-REBROADCAST] REST search returned {len(records)} records")
 
     # Time window: pickup in 4hr45min to 5hr15min from now
     window_start = now + timedelta(minutes=285)
