@@ -5,6 +5,8 @@ import requests
 from datetime import datetime, timezone, timedelta
 from flask import Blueprint, request, jsonify, render_template
 
+from provider_guard import should_block, alert_pa_blocked
+
 logger = logging.getLogger(__name__)
 
 driver_bp = Blueprint("driver", __name__)
@@ -126,6 +128,7 @@ def _fetch_booking_and_provider(booking_id):
         "customer_name": None, "pickup_time": None, "line_user_id": None,
         "pickup_datetime_iso": None, "pickup_location": None,
         "dropoff_location": None, "transfer_route": None, "provider_name": None,
+        "provider_id": None, "type_of_package": None,
     }
     try:
         from zoho_thailand import _get_access_token, ZOHO_API_BASE
@@ -138,7 +141,8 @@ def _fetch_booking_and_provider(booking_id):
             f"{ZOHO_API_BASE}/Koh_Chang_Orders/{booking_id}",
             headers={"Authorization": f"Zoho-oauthtoken {token}"},
             params={"fields": "Name,Last_Name,Pickup_Date_Time,Pickup_Time,"
-                    "Provider_List,Pickup_Location,Dropoff_Location,Transfer_Route"},
+                    "Provider_List,Pickup_Location,Dropoff_Location,Transfer_Route,"
+                    "Type_of_Package"},
             timeout=10,
         )
         if resp.status_code != 200:
@@ -159,12 +163,14 @@ def _fetch_booking_and_provider(booking_id):
         result["pickup_location"] = (booking.get("Pickup_Location") or "").strip()
         result["dropoff_location"] = (booking.get("Dropoff_Location") or "").strip()
         result["transfer_route"] = (booking.get("Transfer_Route") or "").strip()
+        result["type_of_package"] = (booking.get("Type_of_Package") or "").strip()
 
         provider_list = booking.get("Provider_List")
         if not provider_list or not isinstance(provider_list, dict):
             return result
 
         provider_id = provider_list.get("id")
+        result["provider_id"] = provider_id
         if not provider_id:
             return result
 
@@ -203,6 +209,23 @@ def _watchdog_check(booking_id):
     customer = session.get("customer_name") or "(unknown)"
     pickup_time = session.get("pickup_time") or ""
     line_user_id = session.get("line_user_id")
+
+    # ── Provider guard ──
+    blocked, block_reason = should_block(
+        provider_id=session.get("provider_id"),
+        line_user_id=line_user_id,
+        booking={"Type_of_Package": session.get("type_of_package")},
+    )
+    if blocked:
+        logger.warning(
+            f"[GUARD] Blocked watchdog alert for booking={booking_id}: {block_reason}"
+        )
+        alert_pa_blocked(
+            block_reason,
+            booking_id=booking_id,
+            provider_name=session.get("provider_name"),
+        )
+        return
 
     msg = (
         f"\u26a0\ufe0f \u0e04\u0e19\u0e02\u0e31\u0e1a\u0e40\u0e1b\u0e34\u0e14\u0e25\u0e34\u0e07\u0e01\u0e4c"
@@ -251,6 +274,8 @@ def driver_share_page(booking_id):
             "pickup_datetime_iso": info.get("pickup_datetime_iso") or "",
             "line_user_id": info.get("line_user_id"),
             "provider_name": info.get("provider_name") or "",
+            "provider_id": info.get("provider_id"),
+            "type_of_package": info.get("type_of_package") or "",
             "active": True,
             "notified": False,
             "team_notified": False,
@@ -355,6 +380,23 @@ def driver_ping(booking_id):
         customer = session.get("customer_name") or "(unknown)"
         pickup_time = session.get("pickup_time") or ""
         team_url = f"{BASE_URL}/track/{booking_id}"
+
+        # ── Provider guard: block GPS messages to protected providers ──
+        blocked, block_reason = should_block(
+            provider_id=session.get("provider_id"),
+            line_user_id=line_user_id,
+            booking={"Type_of_Package": session.get("type_of_package")},
+        )
+        if blocked:
+            logger.warning(
+                f"[GUARD] Blocked GPS message to provider for booking={booking_id}: {block_reason}"
+            )
+            alert_pa_blocked(
+                block_reason,
+                booking_id=booking_id,
+                provider_name=session.get("provider_name"),
+            )
+            line_user_id = None  # prevent send below
 
         if line_user_id and not session.get("notified"):
             if journey == "approach":

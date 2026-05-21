@@ -23,6 +23,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Blueprint, jsonify
 
 from zoho_thailand import zoho_search, zoho_update_record
+from provider_guard import should_block, alert_pa_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -206,12 +207,24 @@ def approach_watchdog_soft():
 
     alerted = 0
     for b in bookings:
+        # ── Provider guard (backup safety net) ──
+        prov = b.get("Provider_List")
+        prov_id = prov.get("id") if isinstance(prov, dict) else None
+        blocked, block_reason = should_block(
+            provider_id=prov_id,
+            booking={"Type_of_Package": b.get("Type_of_Package")},
+        )
+        if blocked:
+            prov_name = prov.get("name", "") if isinstance(prov, dict) else ""
+            logger.warning(f"[GUARD] Blocked watchdog-soft for {b.get('id')}: {block_reason}")
+            alert_pa_blocked(block_reason, booking_id=b.get("id"), provider_name=prov_name)
+            continue
+
         pickup_dt = _parse_pickup_dt(b.get("Pickup_Date_Time") or "")
         pickup_time = pickup_dt.strftime("%H:%M") if pickup_dt else "?"
         name = (b.get("Name") or b.get("Last_Name") or "Unknown").strip()
         route = b.get("Transfer_Route") or "No route"
         provider = ""
-        prov = b.get("Provider_List")
         if isinstance(prov, dict):
             provider = prov.get("name") or prov.get("Name") or ""
 
@@ -288,6 +301,19 @@ def approach_auto_rebroadcast():
     for r in records:
         # Python filter: Private Transfer only
         if (r.get("Type_of_Package") or "") != "Private Transfer":
+            continue
+
+        # ── Provider guard (backup safety net) ──
+        prov_rb = r.get("Provider_List")
+        prov_rb_id = prov_rb.get("id") if isinstance(prov_rb, dict) else None
+        blocked_rb, block_rb_reason = should_block(
+            provider_id=prov_rb_id,
+            booking={"Type_of_Package": r.get("Type_of_Package")},
+        )
+        if blocked_rb:
+            prov_rb_name = prov_rb.get("name", "") if isinstance(prov_rb, dict) else ""
+            logger.warning(f"[GUARD] Blocked rebroadcast for {r.get('id')}: {block_rb_reason}")
+            alert_pa_blocked(block_rb_reason, booking_id=r.get("id"), provider_name=prov_rb_name)
             continue
 
         # Python filter: exclude TEST bookings
