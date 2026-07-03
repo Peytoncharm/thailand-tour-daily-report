@@ -60,6 +60,13 @@ RENDER_SERVICES = [
 # cron-job.org keywords for watchdog crons
 WATCHDOG_CRON_KEYWORDS = ["watchdog", "approach"]
 
+# Daily scheduled jobs (external cron-job.org triggers), ICT/Thailand time.
+# Labels kept in English on purpose so they read consistently across services.
+SCHEDULED_JOBS = [
+    {"label": "PA Morning Briefing", "time": "08:00"},
+    {"label": "Reconciliation", "time": "18:00"},
+]
+
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -263,6 +270,16 @@ def fetch_watchdog_cron_status():
         return None, str(e)
 
 
+# ── Scheduled jobs (static, network-free) ─────────────────────
+
+def _scheduled_jobs_lines():
+    """Return the daily-schedule section lines (ICT). No network calls."""
+    lines = ["\n\U0001f4c5 ตารางงานประจำวัน (เวลาไทย):"]
+    for job in SCHEDULED_JOBS:
+        lines.append(f"• {job['label']} — {job['time']}")
+    return lines
+
+
 # ── Build message ─────────────────────────────────────────────
 
 def build_health_message():
@@ -284,6 +301,9 @@ def build_health_message():
     ]
 
     # ── n8n Workflows ──
+    # ── Scheduled Jobs (placed high so it survives the 4900-char truncation) ──
+    lines.extend(_scheduled_jobs_lines())
+
     lines.append("\n\U0001f4cb n8n Workflows:")
     if wf_err:
         lines.append(f"\u26a0\ufe0f {wf_err}")
