@@ -12,6 +12,22 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# --- SECURITY: shared-secret check for cron/admin/test endpoints ---
+CRON_SECRET = os.environ.get("CRON_SECRET", "")
+
+@app.before_request
+def _check_cron_secret():
+    path = request.path or ""
+    if path.startswith(("/cron/", "/admin/", "/test/")):
+        if not CRON_SECRET:
+            logger.warning(f"[SECURITY] CRON_SECRET not set — {path} is UNPROTECTED")
+            return None
+        if request.args.get("key", "") != CRON_SECRET:
+            logger.warning(f"[SECURITY] Rejected {path} — bad or missing key")
+            return jsonify({"error": "unauthorized"}), 401
+    return None
+# --- END SECURITY ---
+
 from driver_location import driver_bp
 app.register_blueprint(driver_bp)
 
