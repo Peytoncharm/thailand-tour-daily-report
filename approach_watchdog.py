@@ -303,6 +303,166 @@ def _build_approach_message(booking: dict) -> str:
     )
 
 
+def _build_customer_email(booking: dict, provider: dict, track_url: str):
+    """(subject, html) for the pre-pickup customer tracking email.
+    English, short, plain HTML, mobile-friendly."""
+    customer_first = ((booking.get("Name") or "").strip().split(" ") or [""])[0]
+    pickup_time = ""
+    pdt = booking.get("Pickup_Date_Time") or ""
+    if pdt and "T" in pdt:
+        pickup_time = pdt.split("T")[1][:5]
+
+    driver_first = ((provider.get("Name") or "").strip().split(" ") or [""])[0]
+    car_model = (provider.get("Car_Model") or "").strip()
+    car_colour = (provider.get("Car_Colour") or "").strip()
+    car_reg = (provider.get("Vehicle_Registration") or "").strip()
+    phone = (provider.get("Phone_1") or "").strip()
+
+    vehicle = " ".join(x for x in [car_colour, car_model] if x)
+
+    subject = f"Your driver is on the way — pickup {pickup_time}".strip()
+
+    rows = []
+    if driver_first:
+        rows.append(f"<b>Driver:</b> {driver_first}")
+    if vehicle:
+        rows.append(f"<b>Vehicle:</b> {vehicle}")
+    if car_reg:
+        rows.append(f"<b>Registration:</b> {car_reg}")
+    if phone:
+        rows.append(f'<b>Driver phone:</b> <a href="tel:{phone}">{phone}</a>')
+
+    html = (
+        '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;'
+        'font-size:15px;color:#333;line-height:1.7;max-width:480px">'
+        f"<p>Hi {customer_first or 'there'},</p>"
+        f"<p>Your driver will pick you up at <b>{pickup_time}</b>.</p>"
+        f"<p>{'<br>'.join(rows)}</p>"
+        f'<p><a href="{track_url}" style="display:inline-block;'
+        'background:#1565c0;color:#fff;padding:10px 18px;border-radius:8px;'
+        'text-decoration:none">Watch your driver approach live</a></p>'
+        "<p>See you soon!<br>Peyton &amp; Charmed Transfers</p>"
+        "</div>"
+    )
+    return subject, html
+
+
+def _customer_email_pass(dry_run: bool) -> dict:
+    """
+    Customer tracking email at ~45 min before pickup.
+    Runs inside the same 15-min cron pass as the T-6 link send.
+
+    Window: pickup between now+30m and now+75m ICT.
+    Idempotent via Customer_Track_Link_Sent (same pattern as
+    Approach_Link_Sent). Deliberately a SEPARATE Zoho query so a
+    missing Customer_Track_Link_Sent field (not yet created) can
+    never break the driver link sends — the search just errors,
+    returns [], and this pass no-ops.
+    """
+    now = _now_ict()
+    window_start = now + timedelta(minutes=30)
+    window_end = now + timedelta(minutes=75)
+
+    fields = (
+        "id,Name,Last_Name,Tour_Date,Pickup_Date_Time,Type_of_Package,"
+        "Transfer_Route,Pickup_Location,Provider_List,Chanel_of_booking,"
+        "Status,Email,Customer_Track_Link_Sent"
+    )
+
+    records = []
+    for day in [now.strftime("%Y-%m-%d"),
+                (now + timedelta(days=1)).strftime("%Y-%m-%d")]:
+        criteria = (
+            "(Type_of_Package:equals:Private Transfer)"
+            f"and(Tour_Date:equals:{day})"
+        )
+        records.extend(zoho_search("Koh_Chang_Orders", criteria, fields))
+
+    stats = {"emailed": 0, "skipped_no_email": 0, "skipped_outsourced": 0,
+             "errors": 0, "candidates": []}
+    seen = set()
+
+    for b in records:
+        bid = b.get("id")
+        if not bid or bid in seen:
+            continue
+        seen.add(bid)
+
+        if (b.get("Status") or "").strip() != "Confirmed":
+            continue
+        if (b.get("Chanel_of_booking") or "").strip().upper() == "TEST":
+            continue
+        if (b.get("Customer_Track_Link_Sent") or "") == "Yes":
+            continue
+
+        prov_ref = b.get("Provider_List")
+        prov_id = prov_ref.get("id") if isinstance(prov_ref, dict) else None
+        if not prov_id:
+            continue
+
+        pickup_dt = _parse_pickup_dt(b.get("Pickup_Date_Time") or "")
+        if pickup_dt is None or pickup_dt < window_start or pickup_dt > window_end:
+            continue
+
+        email = (b.get("Email") or "").strip()
+        if not email or "@" not in email:
+            stats["skipped_no_email"] += 1
+            continue
+
+        blocked, block_reason = should_block(
+            provider_id=prov_id,
+            booking={"Type_of_Package": b.get("Type_of_Package")},
+        )
+        if blocked:
+            logger.warning(f"[CUST-EMAIL] Blocked for {bid}: {block_reason}")
+            continue
+
+        provider = _fetch_provider(prov_id)
+        if provider is None:
+            stats["errors"] += 1
+            continue
+        if provider.get("Outsourced_Agent") is True:
+            stats["skipped_outsourced"] += 1
+            continue
+
+        from customer_track import customer_link
+        track_url = customer_link(bid)
+        subject, html = _build_customer_email(b, provider, track_url)
+
+        if dry_run:
+            stats["candidates"].append({
+                "booking_id": bid,
+                "to": email,
+                "subject": subject,
+                "track_url": track_url,
+            })
+            continue
+
+        # Send first, flag second — failed send retries next run.
+        from email_sender import send_email
+        if not send_email(email, subject, html):
+            logger.error(f"[CUST-EMAIL] Send FAILED for {bid} to {email}")
+            stats["errors"] += 1
+            continue
+
+        if _flag_record(bid, "Customer_Track_Link_Sent", "Yes"):
+            stats["emailed"] += 1
+        else:
+            logger.error(
+                f"[CUST-EMAIL] CRITICAL: email sent for {bid} but "
+                "Customer_Track_Link_Sent write-back FAILED — set it in "
+                "Zoho manually to avoid a duplicate email"
+            )
+            stats["errors"] += 1
+
+    logger.info(
+        f"[CUST-EMAIL] dry_run={dry_run} emailed={stats['emailed']} "
+        f"candidates={len(stats['candidates'])} no_email={stats['skipped_no_email']} "
+        f"outsourced={stats['skipped_outsourced']} errors={stats['errors']}"
+    )
+    return stats
+
+
 @approach_watchdog_bp.route("/cron/approach-send", methods=["GET", "POST"])
 def approach_send():
     """
@@ -488,6 +648,14 @@ def approach_send():
         f"no_uid={skipped_no_uid} guard={skipped_guard} errors={errors}"
     )
 
+    # ── Customer tracking email (~45 min before pickup), same pass ──
+    # Isolated so it can never break the driver link sends above.
+    try:
+        email_stats = _customer_email_pass(dry_run)
+    except Exception as e:
+        logger.error(f"[CUST-EMAIL] Pass crashed: {e}", exc_info=True)
+        email_stats = {"error": str(e)}
+
     result = {
         "status": "ok",
         "dry_run": dry_run,
@@ -497,6 +665,8 @@ def approach_send():
         "skipped_no_uid": skipped_no_uid,
         "skipped_guard": skipped_guard,
         "errors": errors,
+        "customer_email": {k: v for k, v in email_stats.items()
+                           if dry_run or k != "candidates"},
     }
     if dry_run:
         result["candidates"] = candidates
@@ -557,6 +727,28 @@ def approach_watchdog_soft():
             "\u0e01\u0e23\u0e38\u0e13\u0e32\u0e15\u0e34\u0e14\u0e15\u0e48\u0e2d"
             " provider \u0e17\u0e31\u0e19\u0e17\u0e35"
         )
+
+        # Known tracker-app user gone silent? Add context line.
+        # (Drivers who never had the app get no extra line.)
+        try:
+            from gps_ingest import code_for_provider_id, has_tracked, get_last_seen
+            code = code_for_provider_id(prov_id)
+            if code and has_tracked(code):
+                last_seen = get_last_seen(code)
+                silent_min = int(
+                    (datetime.now(timezone.utc) - last_seen).total_seconds() // 60
+                )
+                if silent_min >= 30:
+                    msg += (
+                        f"\n\n\U0001f4e1 คนขับมี"
+                        f" tracker app ({code}) แต่ขาด"
+                        f"สัญญาณ {silent_min} "
+                        f"นาที — เช็ค"
+                        f"ว่าเปิดแอป"
+                        f"อยู่ไหม"
+                    )
+        except Exception as e:
+            logger.error(f"[WATCHDOG-SOFT] Tracker-status check failed: {e}")
 
         # ORDER: push LINE first, flag second.
         # If push fails → flag NOT set → next cron retries.

@@ -492,8 +492,36 @@ def team_view_page(booking_id):
 
 @driver_bp.route("/track/<booking_id>/data", methods=["GET"])
 def team_view_data(booking_id):
-    """Return current driver location as JSON (polled by team viewer)."""
+    """Return current driver location as JSON (polled by team viewer).
+    Prefers background-app positions (Traccar via /gps/ingest) when the
+    assigned provider has any; falls back to browser-page pings."""
     session = tracking_sessions.get(booking_id)
+
+    # ── App positions first (live trail, survives backgrounding) ──
+    try:
+        from gps_ingest import code_for_booking, get_app_positions
+        code = code_for_booking(booking_id)
+        if code:
+            points = get_app_positions(code)
+            if points:
+                last = points[-1]
+                last_dt = datetime.fromisoformat(last["ts"]).astimezone(ICT)
+                return jsonify({
+                    "status": "ok",
+                    "source": "app",
+                    "lat": last["lat"],
+                    "lng": last["lng"],
+                    "accuracy": last.get("accuracy"),
+                    "trail": [[p["lat"], p["lng"]] for p in points],
+                    "updated_at": last_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "active": True,
+                    "customer_name": session.get("customer_name", "") if session else "",
+                    "pickup_time": session.get("pickup_time", "") if session else "",
+                }), 200
+    except Exception as e:
+        logger.error(f"[DRIVER-TRACK] App-position lookup failed for {booking_id}: {e}")
+
+    # ── Browser-page fallback (current behaviour) ──
     if not session or session.get("lat") is None:
         return jsonify({
             "status": "waiting",
@@ -503,6 +531,7 @@ def team_view_data(booking_id):
 
     return jsonify({
         "status": "ok",
+        "source": "browser",
         "lat": session["lat"],
         "lng": session["lng"],
         "accuracy": session.get("accuracy"),

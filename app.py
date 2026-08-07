@@ -34,6 +34,12 @@ app.register_blueprint(driver_bp)
 from approach_watchdog import approach_watchdog_bp
 app.register_blueprint(approach_watchdog_bp)
 
+from gps_ingest import gps_bp
+app.register_blueprint(gps_bp)
+
+from customer_track import customer_bp
+app.register_blueprint(customer_bp)
+
 
 @app.route("/", methods=["GET"])
 def health():

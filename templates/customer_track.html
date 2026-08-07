@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your Driver &mdash; Peyton &amp; Charmed</title>
+{% if state == 'live' %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+{% endif %}
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f0f2f5; }
+  .header {
+    background: white; padding: 12px 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+  .header h2 { font-size: 16px; color: #333; }
+  .header .sub { font-size: 12px; color: #888; margin-top: 2px; }
+  .card {
+    background: white; margin: 12px; padding: 14px 16px;
+    border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    font-size: 14px; color: #444; line-height: 1.7;
+  }
+  .card b { color: #222; }
+  .card a { color: #1565c0; text-decoration: none; }
+  #map { width: 100%; height: calc(100vh - 210px); min-height: 300px; }
+  .center-box {
+    margin: 40px 16px; background: white; padding: 28px 20px;
+    border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+    text-align: center; font-size: 15px; color: #555;
+  }
+  .center-box .icon { font-size: 40px; margin-bottom: 10px; }
+  .update-time {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: rgba(255,255,255,0.95); padding: 6px 14px;
+    border-radius: 16px; font-size: 12px; color: #666; z-index: 1000;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1); display: none;
+  }
+  .stale-warning {
+    position: fixed; top: 70px; left: 50%; transform: translateX(-50%);
+    background: #fff3e0; border: 1px solid #ffcc80; padding: 8px 16px;
+    border-radius: 12px; font-size: 13px; color: #e65100; z-index: 1000;
+    display: none;
+  }
+  .wait-note {
+    margin: 0 12px 12px; text-align: center;
+    font-size: 13px; color: #888; display: none;
+  }
+</style>
+</head>
+<body>
+
+{% if state == 'forbidden' %}
+  <div class="center-box">
+    <div class="icon">&#x1F512;</div>
+    <div>This tracking link is not valid.<br>
+    Please check the link in your email or contact us.</div>
+  </div>
+
+{% elif state == 'completed' %}
+  <div class="header"><h2>Peyton &amp; Charmed Transfers</h2></div>
+  <div class="center-box">
+    <div class="icon">&#x2705;</div>
+    <div><b>Trip completed</b><br>
+    We hope you had a great journey!</div>
+  </div>
+
+{% elif state == 'assigning' %}
+  <div class="header">
+    <h2>Your transfer{% if info.pickup_time %} &mdash; pickup {{ info.pickup_time }}{% endif %}</h2>
+    <div class="sub">{{ info.pickup_date }}</div>
+  </div>
+  <div class="center-box">
+    <div class="icon">&#x1F698;</div>
+    <div><b>Your driver is being assigned</b><br>
+    Driver details will appear here soon.</div>
+  </div>
+
+{% else %}
+  <div class="header">
+    <h2>&#x1F698; Your driver{% if info.pickup_time %} &mdash; pickup {{ info.pickup_time }}{% endif %}</h2>
+    <div class="sub">{{ info.pickup_date }}{% if info.pickup_location %} &middot; from {{ info.pickup_location }}{% endif %}</div>
+  </div>
+
+  <div class="card">
+    {% if info.driver_first %}<b>Driver:</b> {{ info.driver_first }}<br>{% endif %}
+    {% if info.car_model or info.car_colour %}<b>Vehicle:</b> {{ info.car_colour }} {{ info.car_model }}<br>{% endif %}
+    {% if info.car_registration %}<b>Registration:</b> {{ info.car_registration }}<br>{% endif %}
+    {% if info.driver_phone %}<b>Driver phone:</b> <a href="tel:{{ info.driver_phone }}">{{ info.driver_phone }}</a>{% endif %}
+  </div>
+
+  <div class="wait-note" id="waitNote">
+    Location appears here when your driver is on the way.
+  </div>
+
+  <div id="map"></div>
+
+  <div class="stale-warning" id="staleWarning">
+    &#x26A0;&#xFE0F; No location update for over 5 minutes
+  </div>
+  <div class="update-time" id="updateTime"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+  var DATA_URL = "/customer/track/{{ booking_id }}/{{ token }}/data";
+  var POLL_INTERVAL_MS = 15000;
+  var map, marker, trailLine, firstLoad = true;
+
+  map = L.map('map').setView([12.5, 101.5], 8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap', maxZoom: 19
+  }).addTo(map);
+
+  var carIcon = L.divIcon({
+    html: '<div style="font-size:32px">&#x1F698;</div>',
+    iconSize: [32, 32], iconAnchor: [16, 16], className: ''
+  });
+
+  function poll() {
+    fetch(DATA_URL)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var timeEl = document.getElementById('updateTime');
+        var staleEl = document.getElementById('staleWarning');
+        var waitEl = document.getElementById('waitNote');
+
+        if (data.status !== 'ok' || !data.lat) {
+          waitEl.style.display = 'block';
+          return;
+        }
+        waitEl.style.display = 'none';
+
+        if (!marker) {
+          marker = L.marker([data.lat, data.lng], {icon: carIcon}).addTo(map);
+          map.setView([data.lat, data.lng], 14);
+        } else {
+          marker.setLatLng([data.lat, data.lng]);
+          if (firstLoad) { map.setView([data.lat, data.lng], 14); firstLoad = false; }
+        }
+
+        if (data.trail && data.trail.length > 1) {
+          if (trailLine) { trailLine.setLatLngs(data.trail); }
+          else { trailLine = L.polyline(data.trail, {color: '#1565c0', weight: 3, opacity: 0.7}).addTo(map); }
+        }
+
+        if (data.updated_at) {
+          var t = data.updated_at.split('T')[1] || data.updated_at;
+          timeEl.textContent = 'Updated: ' + t;
+          timeEl.style.display = 'block';
+          var diffMs = new Date() - new Date(data.updated_at);
+          staleEl.style.display = (diffMs > 300000) ? 'block' : 'none';
+        }
+      })
+      .catch(function(e) { console.error('Poll error:', e); });
+  }
+
+  poll();
+  setInterval(poll, POLL_INTERVAL_MS);
+  </script>
+{% endif %}
+
+</body>
+</html>

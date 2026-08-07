@@ -97,7 +97,7 @@
 var BOOKING_ID = "{{ booking_id }}";
 var DATA_URL = "/track/" + BOOKING_ID + "/data";
 var POLL_INTERVAL_MS = 15000; // 15 seconds
-var map, marker, firstLoad = true;
+var map, marker, trailLine, firstLoad = true;
 var lastUpdateTime = null;
 
 // Header info
@@ -157,6 +157,12 @@ function poll() {
         } else {
           marker.setLatLng([lat, lng]);
           if (firstLoad) { map.setView([lat, lng], 16); firstLoad = false; }
+        }
+
+        // App-source trail (background tracker)
+        if (data.trail && data.trail.length > 1) {
+          if (trailLine) { trailLine.setLatLngs(data.trail); }
+          else { trailLine = L.polyline(data.trail, {color: '#1565c0', weight: 3, opacity: 0.7}).addTo(map); }
         }
 
         if (data.updated_at) {
