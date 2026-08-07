@@ -1,13 +1,13 @@
 """
 approach_watchdog.py
 ────────────────────
-Two cron endpoints that monitor driver approach GPS status
-and escalate when drivers don't open their tracking link.
+Cron endpoints for the driver approach GPS timeline.
 
 Timeline: T-6hr send link → T-5.5hr soft alert → T-5hr rebroadcast
 
 Blueprint: approach_watchdog_bp
 Endpoints:
+  /cron/approach-send                 — pickup in ~6hr → LINE driver the GPS link
   /cron/approach-watchdog-soft        — pickup in ~5.5hr, no GPS → soft alert
   /cron/approach-auto-rebroadcast     — pickup in ~5hr, soft-alerted, no GPS → rebroadcast
 
@@ -20,7 +20,7 @@ import logging
 import os
 import requests
 from datetime import datetime, timezone, timedelta
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 from zoho_thailand import zoho_search, zoho_update_record
 from provider_guard import should_block, alert_pa_blocked
@@ -186,6 +186,321 @@ def _query_no_gps_bookings(
         results.append(r)
 
     return results
+
+
+# ─────────────────────────────────────────────────────────────
+# Endpoint 0: T-6hr send — LINE the driver the GPS tracking link
+# Migrated from n8n workflow QhGJYtjYjvRq1OD0
+# ("Driver Approach Tracking — Send Link") on 7 Aug 2026 after
+# n8n plan execution limits silently stopped sends from 21 May.
+# ─────────────────────────────────────────────────────────────
+
+TRACK_URL_BASE = "https://thailand-tour-daily-report.onrender.com/driver/track/"
+
+# In-memory guard so the empty-UID heads-up isn't re-posted to the
+# ops group every 15 min for the same booking. Resets on redeploy —
+# worst case is one repeat alert, which is acceptable.
+_no_uid_alerted = set()
+
+
+def _fetch_provider(provider_id: str):
+    """Fetch provider record from Zoho. Returns dict or None on error."""
+    from zoho_thailand import _get_access_token, ZOHO_API_BASE
+    token = _get_access_token()
+    if not token:
+        logger.error("[APPROACH-SEND] No Zoho token for provider fetch")
+        return None
+    try:
+        resp = requests.get(
+            f"{ZOHO_API_BASE}/Providers/{provider_id}",
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+            params={"fields": "id,Name,Line_User_ID,Phone_1,Outsourced_Agent"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.error(
+                f"[APPROACH-SEND] Provider fetch {provider_id} failed: "
+                f"{resp.status_code} {resp.text}"
+            )
+            return None
+        data = resp.json().get("data") or []
+        return data[0] if data else None
+    except Exception as e:
+        logger.error(f"[APPROACH-SEND] Provider fetch exception {provider_id}: {e}")
+        return None
+
+
+def _push_line_uid(uid: str, text: str) -> bool:
+    """Push a text message to a single LINE UID. True only on HTTP 200."""
+    if not TRANSFER_LINE_TOKEN or not uid:
+        return False
+    try:
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {TRANSFER_LINE_TOKEN}",
+            },
+            json={"to": uid, "messages": [{"type": "text", "text": text}]},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return True
+        logger.error(
+            f"[APPROACH-SEND] LINE push to {uid} failed: "
+            f"{resp.status_code} {resp.text}"
+        )
+        return False
+    except Exception as e:
+        logger.error(f"[APPROACH-SEND] LINE push exception to {uid}: {e}")
+        return False
+
+
+def _build_approach_message(booking: dict) -> str:
+    """
+    Thai driver message + GPS tracking link.
+    Copied VERBATIM from n8n workflow QhGJYtjYjvRq1OD0
+    node "Build Approach Message" — do not reword without
+    updating the Driver Ops SOP.
+    """
+    booking_id = booking.get("id") or ""
+    full_name = (booking.get("Name") or "").strip()
+    tour_date = (booking.get("Tour_Date") or "").split("T")[0]
+    route = booking.get("Transfer_Route") or ""
+    pickup = booking.get("Pickup_Location") or ""
+
+    pickup_time = ""
+    pdt = booking.get("Pickup_Date_Time") or ""
+    if pdt and "T" in pdt:
+        pickup_time = pdt.split("T")[1][:5]
+
+    track_url = f"{TRACK_URL_BASE}{booking_id}?journey=approach"
+
+    return (
+        "\U0001f690 งาน Transfer — เปิด GPS "
+        "เพื่อยืนยันว่า"
+        "จะมารับลูกค้า\n\n"
+        f"ลูกค้า: {full_name}\n"
+        f"\U0001f4c5 {tour_date} ⏰ {pickup_time}\n"
+        f"\U0001f4cd {route}\n"
+        f"   จาก: {pickup}\n\n"
+        "⚠️ กรุณาเปิดลิง"
+        "ก์นี้และเริ่มแ"
+        "ชร์ตำแหน่งเพื่"
+        "อให้ทีมเห็นว่า"
+        "ท่านพร้อมมารับ"
+        "ลูกค้า\n\n"
+        f"{track_url}\n\n"
+        "ทีมจะเห็นตำแห"
+        "น่งและเส้นทาง"
+        "ของท่าน real-time\n"
+        "ถ้าไม่เปิด GPS ภาย"
+        "ใน 30 นาที ทีมจะติ"
+        "ดต่อตรวจสอบ\n\n"
+        "ถ้าไม่สามารถมา"
+        "รับงานได้ กรุณา"
+        "แจ้งทีมทันที"
+    )
+
+
+@approach_watchdog_bp.route("/cron/approach-send", methods=["GET", "POST"])
+def approach_send():
+    """
+    Cron: every 15 min (cron-job.org).
+    T-6hr step: LINE the assigned driver the GPS tracking link.
+
+    Window: pickup between now+5h45m and now+6h15m (ICT), PLUS a
+    catch-up rule — any unsent booking whose T-6 moment already
+    passed but pickup is still >1hr away (late driver assignment,
+    server downtime). Combined: now+1h < pickup <= now+6h15m.
+
+    Idempotency: Approach_Link_Sent is checked before every send
+    and set to 'Yes' only after a successful LINE push, so re-runs
+    and overlap with the legacy n8n workflow are safe.
+
+    ?dry_run=true — return JSON of what WOULD be sent; sends
+    nothing, writes nothing.
+    """
+    dry_run = (request.args.get("dry_run") or "").strip().lower() in ("true", "1", "yes")
+
+    now = _now_ict()
+    today = now.strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Union of main T-6 window (now+345m..now+375m) and catch-up
+    window_floor = now + timedelta(minutes=60)
+    window_end = now + timedelta(minutes=375)
+
+    fields = (
+        "id,Name,Last_Name,Tour_Date,Pickup_Date_Time,Type_of_Package,"
+        "Transfer_Route,Pickup_Location,Dropoff_Location,Provider_List,"
+        "Approach_Link_Sent,Chanel_of_booking,Status"
+    )
+
+    # Same proven criteria shape as the n8n workflow; picklist values
+    # (Status) are filtered in Python — REST criteria on picklists is
+    # unreliable.
+    records = []
+    for day in [today, tomorrow]:
+        criteria = (
+            "(Type_of_Package:equals:Private Transfer)"
+            f"and(Tour_Date:equals:{day})"
+        )
+        records.extend(zoho_search("Koh_Chang_Orders", criteria, fields))
+
+    logger.info(f"[APPROACH-SEND] REST search returned {len(records)} records")
+
+    sent = 0
+    candidates = []
+    skipped_outsourced = 0
+    skipped_no_uid = 0
+    skipped_guard = 0
+    errors = 0
+    seen_ids = set()
+
+    for b in records:
+        bid = b.get("id")
+        if not bid or bid in seen_ids:
+            continue
+        seen_ids.add(bid)
+
+        if (b.get("Status") or "").strip() != "Confirmed":
+            continue
+
+        # Exclude TEST bookings (same as sibling endpoints)
+        if (b.get("Chanel_of_booking") or "").strip().upper() == "TEST":
+            continue
+
+        # Idempotency guard — also what makes n8n overlap safe
+        if (b.get("Approach_Link_Sent") or "") == "Yes":
+            continue
+
+        prov_ref = b.get("Provider_List")
+        prov_id = prov_ref.get("id") if isinstance(prov_ref, dict) else None
+        if not prov_id:
+            continue
+
+        pickup_dt = _parse_pickup_dt(b.get("Pickup_Date_Time") or "")
+        if pickup_dt is None:
+            continue
+        if pickup_dt <= window_floor or pickup_dt > window_end:
+            continue
+
+        # ── Provider guard (backup safety net, same as siblings) ──
+        blocked, block_reason = should_block(
+            provider_id=prov_id,
+            booking={"Type_of_Package": b.get("Type_of_Package")},
+        )
+        if blocked:
+            prov_name = prov_ref.get("name", "") if isinstance(prov_ref, dict) else ""
+            logger.warning(f"[GUARD] Blocked approach-send for {bid}: {block_reason}")
+            if not dry_run:
+                alert_pa_blocked(block_reason, booking_id=bid, provider_name=prov_name)
+            skipped_guard += 1
+            continue
+
+        provider = _fetch_provider(prov_id)
+        if provider is None:
+            # Zoho hiccup — leave unsent, next run retries naturally
+            errors += 1
+            continue
+
+        prov_name = (provider.get("Name") or "").strip()
+        line_uid = (provider.get("Line_User_ID") or "").strip()
+
+        # Outsourced agents (e.g. Garfield) coordinate their own
+        # drivers — a GPS link would trigger false watchdog alerts.
+        if provider.get("Outsourced_Agent") is True:
+            logger.info(
+                f"[APPROACH-SEND] Skipped {bid} — provider {prov_name} "
+                "is Outsourced_Agent"
+            )
+            skipped_outsourced += 1
+            continue
+
+        pickup_hhmm = pickup_dt.strftime("%H:%M")
+        name = (b.get("Name") or b.get("Last_Name") or "Unknown").strip()
+        route = b.get("Transfer_Route") or "No route"
+
+        if not line_uid:
+            logger.warning(
+                f"[APPROACH-SEND] No Line_User_ID for provider {prov_name} "
+                f"(booking {bid}) — alerting ops group"
+            )
+            skipped_no_uid += 1
+            if not dry_run and bid not in _no_uid_alerted:
+                heads_up = (
+                    "⚠️ ส่งลิงก์ GPS "
+                    "ไม่ได้ — driver ไม่"
+                    "มี LINE UID\n\n"
+                    f"\U0001f516 {name}\n"
+                    f"⏰ Pickup: {pickup_hhmm}\n"
+                    f"\U0001f4cd {route}\n"
+                    f"\U0001f690 Provider: {prov_name}\n\n"
+                    "\U0001f4de กรุณาโทรหา"
+                    " driver โดยตรง"
+                )
+                if _push_line_group(heads_up):
+                    _no_uid_alerted.add(bid)
+            continue
+
+        msg = _build_approach_message(b)
+
+        if dry_run:
+            candidates.append({
+                "booking_id": bid,
+                "name": name,
+                "pickup": b.get("Pickup_Date_Time"),
+                "route": route,
+                "provider": prov_name,
+                "line_uid": line_uid,
+                "message": msg,
+            })
+            continue
+
+        # Push first, flag second — a failed push leaves
+        # Approach_Link_Sent null so the next run retries.
+        ok = _push_line_uid(line_uid, msg)
+        if not ok:
+            ok = _push_line_uid(line_uid, msg)  # retry once
+        if not ok:
+            logger.error(
+                f"[APPROACH-SEND] LINE push FAILED twice for booking {bid} "
+                f"(provider {prov_name}, uid {line_uid}) — will retry next run"
+            )
+            errors += 1
+            continue
+
+        if _flag_record(bid, "Approach_Link_Sent", "Yes"):
+            sent += 1
+        else:
+            # Sent but not flagged — next run would double-send.
+            logger.error(
+                f"[APPROACH-SEND] CRITICAL: link sent for {bid} but "
+                "Approach_Link_Sent write-back FAILED — fix in Zoho manually "
+                "to avoid a duplicate send"
+            )
+            errors += 1
+
+    logger.info(
+        f"[APPROACH-SEND] dry_run={dry_run} sent={sent} "
+        f"candidates={len(candidates)} outsourced={skipped_outsourced} "
+        f"no_uid={skipped_no_uid} guard={skipped_guard} errors={errors}"
+    )
+
+    result = {
+        "status": "ok",
+        "dry_run": dry_run,
+        "checked": len(seen_ids),
+        "sent": sent,
+        "skipped_outsourced": skipped_outsourced,
+        "skipped_no_uid": skipped_no_uid,
+        "skipped_guard": skipped_guard,
+        "errors": errors,
+    }
+    if dry_run:
+        result["candidates"] = candidates
+    return jsonify(result)
 
 
 # ─────────────────────────────────────────────────────────────
