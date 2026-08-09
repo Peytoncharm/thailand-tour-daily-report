@@ -1,9 +1,21 @@
 """
 provider_guard.py — Last-resort safety net for provider LINE messages
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Prevents automated GPS/approach/reminder messages from being sent to:
+TWO-TIER POLICY for protected providers (decision by Orathai, 9 Aug 2026):
+  ALLOWED  — operational booking notifications and evening-before reminders
+             (e.g. the 20:00 n8n "Remind to Provider (Transfer)" workflow,
+             which since 9 Aug 2026 also covers Join Transfer bookings).
+  NEVER    — GPS tracking links, approach links, watchdog alerts. These are
+             driver-behaviour tools; KCE/SWB are company bus services whose
+             coordinators cannot act on them (false watchdogs → auto-
+             rebroadcast → relationship damage).
+
+This module guards the NEVER tier only. It prevents automated GPS/approach/
+watchdog messages from being sent to:
   1. Protected providers (KCE, SWB) — company bus services, not individual drivers
   2. Any booking whose Type_of_Package is NOT 'Private Transfer'
+Evening reminders are sent from n8n and intentionally do NOT pass through
+this guard.
 
 Usage:
     from provider_guard import should_block, alert_pa_blocked
@@ -29,7 +41,9 @@ TEAM_LINE_GROUP_ID = os.environ.get("TEAM_LINE_GROUP_ID", "")
 
 # ── Protected providers ───────────────────────────────────────
 # Company bus services that must NEVER receive automated GPS
-# tracking, approach links, watchdog alerts, or reminder messages.
+# tracking, approach links, or watchdog alerts. (Operational booking
+# notifications and evening-before reminders ARE allowed — see the
+# two-tier policy in the module docstring.)
 
 PROTECTED_PROVIDERS = {
     "464930000004312015": {
