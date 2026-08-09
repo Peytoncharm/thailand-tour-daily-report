@@ -57,12 +57,16 @@ def _get_pool():
             from psycopg_pool import ConnectionPool
             _pool = ConnectionPool(
                 DATABASE_URL,
-                min_size=0,
+                min_size=1,              # keep ONE warm connection: with min_size=0
+                                         # the pool sat empty between pings and every
+                                         # acquire paid fresh-connection latency —
+                                         # the purge's 3s budget lost that lottery
                 max_size=4,
                 timeout=3,               # max wait for a pooled connection
                 kwargs={
                     "connect_timeout": 3,
                     "options": "-c statement_timeout=4000",
+                    "application_name": "gps-dual-write",
                 },
             )
             logger.info("[GPS-DB] connection pool created")
@@ -239,20 +243,46 @@ _PURGES = [
 
 @db_bp.route("/cron/db-purge", methods=["GET"])
 def cron_db_purge():
-    """Retention purge — schedule on cron-job.org ~03:30 ICT daily."""
-    pool = _get_pool()
-    if pool is None:
-        return jsonify({"ok": False, "reason": "no DATABASE_URL / pool"}), 200
-    if not ensure_schema():
-        return jsonify({"ok": False, "reason": "schema not ready"}), 200
-    deleted = {}
-    try:
-        with pool.connection() as conn:
-            for table, sql in _PURGES:
-                cur = conn.execute(sql)
-                deleted[table] = cur.rowcount
-        logger.info(f"[GPS-DB] purge done: {deleted}")
-        return jsonify({"ok": True, "deleted": deleted}), 200
-    except Exception as e:
-        logger.error(f"[GPS-DB] purge failed: {e}")
-        return jsonify({"ok": False, "reason": str(e)[:200]}), 200
+    """Retention purge — schedule on cron-job.org ~03:30 ICT daily.
+
+    Uses a DEDICATED direct connection, NOT the pool: the purge runs once
+    a night, so pooling buys nothing, and the pool's 3s acquire budget
+    proved flaky when it sat empty (observed 9 Aug: two acquire timeouts
+    while dual-writes worked). Direct connect, 10s timeout, 3 attempts
+    with backoff. Runs the idempotent DDL first so it does not depend on
+    the pool-based ensure_schema() either."""
+    import time as _t
+
+    if not DATABASE_URL:
+        # also a final failure — alert rather than silently skip retention
+        return jsonify({"ok": False, "reason": "no DATABASE_URL"}), 500
+
+    attempts, last_err = 0, ""
+    for backoff in (0, 2, 5):
+        if backoff:
+            _t.sleep(backoff)
+        attempts += 1
+        try:
+            import psycopg
+            with psycopg.connect(
+                DATABASE_URL,
+                connect_timeout=10,
+                options="-c statement_timeout=30000",
+                application_name="db-purge",
+            ) as conn:
+                conn.execute(_SCHEMA_DDL)          # idempotent, pool-free
+                deleted = {}
+                for table, sql in _PURGES:
+                    cur = conn.execute(sql)
+                    deleted[table] = cur.rowcount
+            logger.info(f"[GPS-DB] purge done (attempt {attempts}): {deleted}")
+            return jsonify({"ok": True, "deleted": deleted,
+                            "attempts": attempts}), 200
+        except Exception as e:
+            last_err = str(e)[:200]
+            logger.warning(f"[GPS-DB] purge attempt {attempts} failed: {last_err}")
+
+    logger.error(f"[GPS-DB] purge failed after {attempts} attempts: {last_err}")
+    # 500 so cron-job.org's standard failure alerting fires on final failure
+    return jsonify({"ok": False, "reason": last_err,
+                    "attempts": attempts}), 500
