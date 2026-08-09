@@ -54,10 +54,17 @@ def health():
     # RENDER_GIT_COMMIT). Lets anyone verify live-vs-pushed from outside —
     # added after the 4c59b21 build failure went unnoticed because no
     # public signal distinguished old code from new.
+    _pp = -1
+    try:
+        from db import pickup_points_count
+        _pp = pickup_points_count()
+    except Exception:
+        pass
     return jsonify({
         "status": "ok",
         "service": "thailand-tour-daily-report",
         "commit": os.environ.get("RENDER_GIT_COMMIT", "")[:7],
+        "pickup_points": _pp,
     }), 200
 
 

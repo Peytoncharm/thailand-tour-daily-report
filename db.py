@@ -129,6 +129,15 @@ CREATE INDEX IF NOT EXISTS idx_eta_history_booking
 CREATE INDEX IF NOT EXISTS idx_eta_history_route
   ON eta_history (route_key, computed_at DESC);
 
+CREATE TABLE IF NOT EXISTS pickup_points (
+  place_name text PRIMARY KEY,          -- lowercase zone/resort key
+  lat double precision NOT NULL,
+  lng double precision NOT NULL,
+  confidence text,
+  verify_note text,
+  imported_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS alert_log (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   booking_id text,
@@ -162,10 +171,71 @@ def ensure_schema():
         return False
 
 
+def import_pickup_points():
+    """Boot-time import of the validated 22-row coordinate file
+    (pickup_points_draft.csv, shipped in the repo — validated 9 Aug:
+    ranges, no dupes, lowercase, all confirmed/good). Idempotent upsert
+    keyed on place_name; runs only when the table row count differs from
+    the CSV row count. Returns rows imported (0 = already in sync)."""
+    import csv as _csv
+    import os as _os
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                         "pickup_points_draft.csv")
+    if not _os.path.exists(path):
+        logger.warning("[GPS-DB] pickup_points CSV missing — import skipped")
+        return 0
+    pool = _get_pool()
+    if pool is None or not ensure_schema():
+        return 0
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            rows = list(_csv.DictReader(f))
+        with pool.connection() as conn:
+            n = conn.execute("SELECT count(*) FROM pickup_points").fetchone()[0]
+            if n == len(rows):
+                return 0
+            for r in rows:
+                conn.execute(
+                    """
+                    INSERT INTO pickup_points (place_name, lat, lng, confidence, verify_note)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (place_name) DO UPDATE SET
+                      lat = EXCLUDED.lat, lng = EXCLUDED.lng,
+                      confidence = EXCLUDED.confidence,
+                      verify_note = EXCLUDED.verify_note,
+                      imported_at = now()
+                    """,
+                    ((r.get("place_name") or "").strip().lower(),
+                     float(r["lat"]), float(r["lng"]),
+                     (r.get("confidence") or "").strip(),
+                     (r.get("verify_note") or "").strip()),
+                )
+        logger.info(f"[GPS-DB] pickup_points imported: {len(rows)} rows")
+        return len(rows)
+    except Exception as e:
+        logger.error(f"[GPS-DB] pickup_points import failed: {e}")
+        return 0
+
+
+def pickup_points_count():
+    """Row count for external verification (health endpoint). -1 = no DB."""
+    try:
+        pool = _get_pool()
+        if pool is None:
+            return -1
+        with pool.connection() as conn:
+            return conn.execute("SELECT count(*) FROM pickup_points").fetchone()[0]
+    except Exception:
+        return -1
+
+
 def ensure_schema_async():
-    """Boot-time schema check without delaying app startup."""
+    """Boot-time schema check + pickup-points import, off the boot path."""
+    def _boot():
+        ensure_schema()
+        import_pickup_points()
     if DATABASE_URL:
-        threading.Thread(target=ensure_schema, daemon=True).start()
+        threading.Thread(target=_boot, daemon=True).start()
 
 
 def insert_position(driver_id: str, point: dict, batt=None):
