@@ -44,6 +44,9 @@ from db import db_bp, ensure_schema_async
 app.register_blueprint(db_bp)
 ensure_schema_async()  # idempotent DDL in a daemon thread; no-op without DATABASE_URL
 
+from booking_cache import booking_cache_bp
+app.register_blueprint(booking_cache_bp)
+
 
 @app.route("/", methods=["GET"])
 def health():
