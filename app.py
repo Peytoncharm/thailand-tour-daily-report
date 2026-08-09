@@ -47,6 +47,47 @@ ensure_schema_async()  # idempotent DDL in a daemon thread; no-op without DATABA
 from booking_cache import booking_cache_bp
 app.register_blueprint(booking_cache_bp)
 
+# --- Readiness gate (Task 1, 9 Aug): Render used port-open to decide
+# "live", so the first requests after a deploy paid Zoho-token + provider-
+# registry + DB-pool cold costs and cron cycles timed out (17:33 sweep,
+# 20:45 double cron). /ready reports 200 only after the eager warm-up
+# below completes; render.yaml healthCheckPath points here, so Render
+# keeps the OLD instance serving until the NEW one is warm. ---
+_READY = {"zoho": False, "providers": False, "db": False}
+
+def _warmup():
+    try:
+        from zoho_thailand import _get_access_token
+        _READY["zoho"] = bool(_get_access_token())
+    except Exception as e:
+        logger.error(f"[WARMUP] zoho token prefetch failed: {e}")
+    try:
+        from gps_ingest import _refresh_providers, _provider_cache
+        _refresh_providers()
+        _READY["providers"] = bool(_provider_cache["by_code"])
+    except Exception as e:
+        logger.error(f"[WARMUP] provider registry prefetch failed: {e}")
+    try:
+        if os.environ.get("DATABASE_URL"):
+            from db import ensure_schema
+            _READY["db"] = bool(ensure_schema())
+        else:
+            _READY["db"] = True  # no DB configured -> not a readiness blocker
+    except Exception as e:
+        logger.error(f"[WARMUP] db warmup failed: {e}")
+    logger.info(f"[WARMUP] done: {_READY}")
+
+threading.Thread(target=_warmup, daemon=True).start()
+
+
+@app.route("/ready", methods=["GET"])
+def ready():
+    """Render health check target. Public by necessity (Render cannot
+    send secrets); exposes only boolean warm-up state."""
+    ok = all(_READY.values())
+    return jsonify({"ready": ok, **_READY}), (200 if ok else 503)
+# --- END readiness gate ---
+
 
 @app.route("/", methods=["GET"])
 def health():
