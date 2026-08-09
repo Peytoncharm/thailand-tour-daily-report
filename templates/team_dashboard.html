@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0d12">
+<title>P&amp;C Transfer — Live Board</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #101320; --panel2: #0d0f16;
+    --text: #e6e8ef; --muted: #98a0b8;
+    --green: #2dd4a0; --amber: #f0b429; --red: #f06060; --grey: #5a6072;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; background: var(--bg); }
+  /* Dark board: mute the OSM tiles instead of paying for dark tiles */
+  .leaflet-tile { filter: brightness(0.6) invert(1) contrast(3) hue-rotate(200deg)
+                          saturate(0.3) brightness(0.7); }
+  #topbar { position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
+    background: linear-gradient(180deg, #101320, rgba(11,13,18,0.85));
+    padding: 10px 16px; display: flex; align-items: baseline; gap: 14px;
+    border-bottom: 1px solid #1d2233; }
+  #topbar h1 { font-size: 15px; font-weight: 600; letter-spacing: .4px; }
+  #topbar .sub { color: var(--muted); font-size: 12px; }
+  #legend { position: absolute; bottom: 14px; left: 14px; z-index: 1000;
+    background: var(--panel2); border: 1px solid #1d2233; border-radius: 10px;
+    padding: 10px 14px; font-size: 12px; color: var(--muted); }
+  .dotk { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle; }
+  .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text);
+    border-radius: 10px; border: 1px solid #1d2233; }
+  .leaflet-popup-tip { background: var(--panel); }
+  .pop b { font-size: 14px; }
+  .pop .m { color: var(--muted); font-size: 12px; line-height: 1.7; }
+  #stamp { position: absolute; bottom: 14px; right: 14px; z-index: 1000;
+    color: var(--muted); font-size: 11px; background: var(--panel2);
+    border: 1px solid #1d2233; border-radius: 8px; padding: 6px 10px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="topbar">
+  <h1>🚐 P&amp;C Transfer — Live Board</h1>
+  <span class="sub" id="count">…</span>
+</div>
+<div id="legend">
+  <div><span class="dotk" style="background:var(--green)"></span> สดใหม่ &lt; 5 นาที</div>
+  <div><span class="dotk" style="background:var(--amber)"></span> 5–20 นาที</div>
+  <div><span class="dotk" style="background:var(--red)"></span> เกิน 20 นาที / ขาดสัญญาณ</div>
+</div>
+<div id="stamp">—</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const KEY = {{ key|tojson }};
+  const REFRESH_MS = 30000;
+
+  // East region: Koh Chang / Trat with the mainland corridor in view
+  const map = L.map("map", { zoomControl: true }).setView([12.35, 102.15], 9);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18, attribution: "&copy; OpenStreetMap"
+  }).addTo(map);
+
+  const markers = new Map();  // code -> circleMarker
+
+  function colourFor(age_s, t) {
+    if (age_s == null) return getComputedStyle(document.documentElement).getPropertyValue("--grey");
+    if (age_s < t.green_s) return getComputedStyle(document.documentElement).getPropertyValue("--green");
+    if (age_s < t.amber_s) return getComputedStyle(document.documentElement).getPropertyValue("--amber");
+    return getComputedStyle(document.documentElement).getPropertyValue("--red");
+  }
+
+  function ageLabel(age_s) {
+    if (age_s == null) return "ไม่ทราบ";
+    if (age_s < 60) return age_s + " วิที่แล้ว";
+    if (age_s < 3600) return Math.round(age_s / 60) + " นาทีที่แล้ว";
+    return Math.round(age_s / 3600) + " ชม.ที่แล้ว";
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch("/team/dashboard/data?key=" + encodeURIComponent(KEY));
+      const d = await r.json();
+      if (!d.ok) { document.getElementById("count").textContent = "⚠ " + (d.reason || "error"); return; }
+      const seen = new Set();
+      for (const drv of d.drivers) {
+        if (drv.lat == null || drv.lng == null) continue;
+        seen.add(drv.code);
+        const col = colourFor(drv.age_s, d.thresholds).trim();
+        const html = `<div class="pop"><b>${drv.name || drv.code}</b>
+          <div class="m">รหัส: ${drv.code}<br>
+          เห็นล่าสุด: ${drv.last_seen_ict || "-"} (${ageLabel(drv.age_s)})<br>
+          แบตเตอรี่: ${drv.batt != null ? drv.batt + "%" : "-"}</div></div>`;
+        if (markers.has(drv.code)) {
+          const m = markers.get(drv.code);
+          m.setLatLng([drv.lat, drv.lng]);
+          m.setStyle({ color: col, fillColor: col });
+          m.getPopup().setContent(html);
+        } else {
+          const m = L.circleMarker([drv.lat, drv.lng], {
+            radius: 9, weight: 2, color: col, fillColor: col, fillOpacity: 0.75
+          }).addTo(map).bindPopup(html);
+          markers.set(drv.code, m);
+        }
+      }
+      for (const [code, m] of markers) {
+        if (!seen.has(code)) { map.removeLayer(m); markers.delete(code); }
+      }
+      document.getElementById("count").textContent =
+        d.drivers.length + " คนขับกำลังติดตาม";
+      document.getElementById("stamp").textContent =
+        "อัปเดต " + new Date().toLocaleTimeString("th-TH") + " · รีเฟรชทุก 30 วิ";
+    } catch (e) {
+      document.getElementById("count").textContent = "⚠ โหลดไม่สำเร็จ";
+    }
+  }
+
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
