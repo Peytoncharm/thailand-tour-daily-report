@@ -83,7 +83,7 @@ def _refresh_providers(force=False):
         from zoho_thailand import zoho_get_records
         records = zoho_get_records(
             "Providers",
-            fields="id,Name,Provider_Code,Outsourced_Agent",
+            fields="id,Name,Provider_Code,Outsourced_Agent,Line_User_ID",
             max_pages=10,
         )
     except Exception as e:
@@ -99,7 +99,8 @@ def _refresh_providers(force=False):
         pid = r.get("id")
         if not code or not pid:
             continue
-        entry = {"id": pid, "name": (r.get("Name") or "").strip(), "code": code}
+        entry = {"id": pid, "name": (r.get("Name") or "").strip(), "code": code,
+                 "line_user_id": (r.get("Line_User_ID") or "").strip()}
         by_code[code] = entry
         by_id[pid] = entry
 
@@ -215,6 +216,19 @@ def get_last_seen(code: str):
 def has_tracked(code: str) -> bool:
     """True if this provider has sent app positions since last restart."""
     return (code or "").strip().upper() in POSITIONS
+
+
+def provider_entry_for_id(provider_id: str):
+    """Full cached registry entry ({id, name, code, line_user_id}) for a
+    Zoho provider id, or None. Cache miss → one forced refresh attempt."""
+    if not provider_id:
+        return None
+    _refresh_providers()
+    entry = _provider_cache["by_id"].get(provider_id)
+    if entry:
+        return entry
+    _refresh_providers(force=True)
+    return _provider_cache["by_id"].get(provider_id)
 
 
 def code_for_provider_id(provider_id: str):

@@ -131,25 +131,14 @@ def _fetch_booking_and_provider(booking_id):
         "provider_id": None, "type_of_package": None,
     }
     try:
-        from zoho_thailand import _get_access_token, ZOHO_API_BASE
-        token = _get_access_token()
-        if not token:
+        # Stage 1.2 A2: cache-first booking read. get_booking() itself
+        # falls back to a single direct Zoho read (+ self-healing upsert)
+        # on cache miss OR DB failure, so degraded behaviour == old code.
+        from booking_cache import get_booking
+        booking = get_booking(booking_id)
+        if not booking:
+            logger.warning(f"[DRIVER-TRACK] Booking {booking_id} not found (cache+Zoho)")
             return result
-
-        # Get booking
-        resp = requests.get(
-            f"{ZOHO_API_BASE}/Koh_Chang_Orders/{booking_id}",
-            headers={"Authorization": f"Zoho-oauthtoken {token}"},
-            params={"fields": "Name,Last_Name,Pickup_Date_Time,Pickup_Time,"
-                    "Provider_List,Pickup_Location,Dropoff_Location,Transfer_Route,"
-                    "Type_of_Package"},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            logger.warning(f"[DRIVER-TRACK] Booking {booking_id} fetch failed: {resp.status_code}")
-            return result
-
-        booking = resp.json().get("data", [{}])[0]
         name = (booking.get("Name") or "").strip()
         last = (booking.get("Last_Name") or "").strip()
         result["customer_name"] = f"{name} {last}".strip() if last else name
@@ -174,7 +163,24 @@ def _fetch_booking_and_provider(booking_id):
         if not provider_id:
             return result
 
-        # Get provider details
+        # Provider details from the in-memory registry (hourly-refreshed by
+        # gps_ingest — now carries Line_User_ID). Registry miss (e.g. a
+        # provider without a Provider_Code) → original direct Zoho fetch.
+        try:
+            from gps_ingest import provider_entry_for_id
+            entry = provider_entry_for_id(provider_id)
+        except Exception:
+            entry = None
+        if entry:
+            line_id = (entry.get("line_user_id") or "").strip()
+            result["line_user_id"] = line_id if line_id else None
+            result["provider_name"] = entry.get("name") or ""
+            return result
+
+        from zoho_thailand import _get_access_token, ZOHO_API_BASE
+        token = _get_access_token()
+        if not token:
+            return result
         resp2 = requests.get(
             f"{ZOHO_API_BASE}/Providers/{provider_id}",
             headers={"Authorization": f"Zoho-oauthtoken {token}"},
