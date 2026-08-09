@@ -140,24 +140,46 @@ def _parse_timestamp(raw):
 def _writeback_worker(code: str, provider_id: str, lat: float, lng: float):
     """Update Approach_Last_GPS_* on this provider's Confirmed booking(s)
     with pickup today/tomorrow. Runs in a daemon thread — never blocks
-    ingest; failures are logged and retried at the next throttle window."""
+    ingest; failures are logged and retried at the next throttle window.
+
+    Stage 1.2: booking lookup is CACHE-FIRST (this was the scale-killer:
+    2 Zoho searches per driver per 5 min = 14,400 reads/day at 60
+    drivers). Cache unavailable or empty -> identical-to-before direct
+    Zoho searches. The Approach_Last_GPS_* update is a WRITE and stays
+    on Zoho unconditionally."""
     try:
         from zoho_thailand import zoho_search, zoho_update_record
         now = datetime.now(ICT)
-        fields = "id,Status,Provider_List,Pickup_Date_Time,Type_of_Package"
+        days = [now.strftime("%Y-%m-%d"),
+                (now + timedelta(days=1)).strftime("%Y-%m-%d")]
+
+        # Cache-first (0 Zoho reads on the happy path)
+        records = None
+        try:
+            from booking_cache import get_bookings_for_dates
+            records = get_bookings_for_dates(days, type_of_package="Private Transfer")
+        except Exception as _c_err:
+            logger.warning(f"[GPS-INGEST] cache lookup failed, using Zoho: {_c_err}")
+
+        if not records:
+            # DB down, cache unprimed, or genuinely no bookings — fall back
+            # to the exact pre-cache behaviour so nothing is ever missed.
+            fields = "id,Status,Provider_List,Pickup_Date_Time,Type_of_Package"
+            records = []
+            for day in days:
+                criteria = (
+                    "(Type_of_Package:equals:Private Transfer)"
+                    f"and(Tour_Date:equals:{day})"
+                )
+                records.extend(zoho_search("Koh_Chang_Orders", criteria, fields))
+
         matches = []
-        for day in [now.strftime("%Y-%m-%d"),
-                    (now + timedelta(days=1)).strftime("%Y-%m-%d")]:
-            criteria = (
-                "(Type_of_Package:equals:Private Transfer)"
-                f"and(Tour_Date:equals:{day})"
-            )
-            for r in zoho_search("Koh_Chang_Orders", criteria, fields):
-                if (r.get("Status") or "").strip() != "Confirmed":
-                    continue
-                prov = r.get("Provider_List")
-                if isinstance(prov, dict) and prov.get("id") == provider_id:
-                    matches.append(r["id"])
+        for r in records:
+            if (r.get("Status") or "").strip() != "Confirmed":
+                continue
+            prov = r.get("Provider_List")
+            if isinstance(prov, dict) and prov.get("id") == provider_id:
+                matches.append(r["id"])
 
         now_str = now.strftime("%Y-%m-%dT%H:%M:%S+07:00")
         for bid in matches:
@@ -209,27 +231,22 @@ def code_for_provider_id(provider_id: str):
 
 
 def code_for_booking(booking_id: str):
-    """Provider_Code of the booking's assigned provider (cached 5 min)."""
+    """Provider_Code of the booking's assigned provider (cached 5 min).
+
+    Stage 1.2: reads booking_cache first (get_booking falls back to a
+    single direct Zoho read + self-healing upsert on cache miss OR DB
+    failure, so behaviour with the DB down is identical to the old
+    direct fetch). The 5-min in-process cache on top is unchanged."""
     cached = _booking_code_cache.get(booking_id)
     if cached and (_now_utc() - cached[0]).total_seconds() < BOOKING_LOOKUP_TTL:
         return cached[1]
     code = None
     try:
-        import requests
-        from zoho_thailand import _get_access_token, ZOHO_API_BASE
-        token = _get_access_token()
-        if token:
-            resp = requests.get(
-                f"{ZOHO_API_BASE}/Koh_Chang_Orders/{booking_id}",
-                headers={"Authorization": f"Zoho-oauthtoken {token}"},
-                params={"fields": "Provider_List"},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                data = resp.json().get("data") or [{}]
-                prov = data[0].get("Provider_List")
-                if isinstance(prov, dict) and prov.get("id"):
-                    code = code_for_provider_id(prov["id"])
+        from booking_cache import get_booking
+        rec = get_booking(booking_id)
+        prov = (rec or {}).get("Provider_List")
+        if isinstance(prov, dict) and prov.get("id"):
+            code = code_for_provider_id(prov["id"])
     except Exception as e:
         logger.error(f"[GPS-INGEST] code_for_booking {booking_id} error: {e}")
     _booking_code_cache[booking_id] = (_now_utc(), code)
