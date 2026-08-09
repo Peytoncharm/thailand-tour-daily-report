@@ -91,13 +91,34 @@ def _push_line_group(message: str) -> bool:
 
 
 def _flag_record(record_id: str, field: str, value: str = "Yes") -> bool:
-    """Update a single field on Koh_Chang_Orders. Returns True on success."""
+    """Update a single field on Koh_Chang_Orders. Returns True on success.
+    Stage 1.2: after a successful Zoho write, immediately patch the same
+    field in the local booking cache so sibling crons inside the same
+    15-min sweep window see it (race fix — no waiting for the next sweep)."""
     try:
         zoho_update_record("Koh_Chang_Orders", record_id, {field: value})
+        try:
+            from booking_cache import update_cached_field
+            update_cached_field(record_id, field, value)
+        except Exception:
+            pass  # cache patch is best-effort; Zoho write already succeeded
         return True
     except Exception as e:
         logger.error(f"[WATCHDOG] Flag update failed {record_id}.{field}: {e}")
         return False
+
+
+def _cache_window(days, package=None):
+    """Cache-first day-window read. Returns a list of raw Zoho-shaped
+    records, or None when the cache is unavailable/unprimed — callers
+    then fall back to their original direct Zoho searches."""
+    try:
+        from booking_cache import get_bookings_for_dates
+        recs = get_bookings_for_dates(days, type_of_package=package)
+        return recs if recs else None
+    except Exception as e:
+        logger.warning(f"[WATCHDOG] cache window failed (Zoho fallback): {e}")
+        return None
 
 
 def _query_no_gps_bookings(
@@ -135,22 +156,27 @@ def _query_no_gps_bookings(
         "Type_of_Package"
     )
 
-    # REST search: fetch today's bookings with approach link sent
-    all_records = []
-    criteria_today = (
-        "(Approach_Link_Sent:equals:Yes)"
-        f"and(Tour_Date:equals:{today})"
-    )
-    all_records.extend(zoho_search("Koh_Chang_Orders", criteria_today, fields))
-
-    # Also fetch tomorrow's bookings (for late-night pickups)
-    criteria_tomorrow = (
-        "(Approach_Link_Sent:equals:Yes)"
-        f"and(Tour_Date:equals:{tomorrow})"
-    )
-    all_records.extend(zoho_search("Koh_Chang_Orders", criteria_tomorrow, fields))
-
-    logger.info(f"[WATCHDOG] REST search returned {len(all_records)} records")
+    # Cache-first (Stage 1.2): all of today+tomorrow from booking_cache,
+    # then the Approach_Link_Sent=Yes criteria as a Python filter.
+    # Cache unavailable/unprimed -> original direct REST searches.
+    cached = _cache_window([today, tomorrow])
+    if cached is not None:
+        all_records = [r for r in cached
+                       if (r.get("Approach_Link_Sent") or "") == "Yes"]
+        logger.info(f"[WATCHDOG] cache returned {len(all_records)} flagged records")
+    else:
+        all_records = []
+        criteria_today = (
+            "(Approach_Link_Sent:equals:Yes)"
+            f"and(Tour_Date:equals:{today})"
+        )
+        all_records.extend(zoho_search("Koh_Chang_Orders", criteria_today, fields))
+        criteria_tomorrow = (
+            "(Approach_Link_Sent:equals:Yes)"
+            f"and(Tour_Date:equals:{tomorrow})"
+        )
+        all_records.extend(zoho_search("Koh_Chang_Orders", criteria_tomorrow, fields))
+        logger.info(f"[WATCHDOG] REST search returned {len(all_records)} records")
 
     results = []
     for r in all_records:
@@ -369,14 +395,18 @@ def _customer_email_pass(dry_run: bool) -> dict:
         "Status,Email,Customer_Track_Link_Sent"
     )
 
-    records = []
-    for day in [now.strftime("%Y-%m-%d"),
-                (now + timedelta(days=1)).strftime("%Y-%m-%d")]:
-        criteria = (
-            "(Type_of_Package:equals:Private Transfer)"
-            f"and(Tour_Date:equals:{day})"
-        )
-        records.extend(zoho_search("Koh_Chang_Orders", criteria, fields))
+    _days = [now.strftime("%Y-%m-%d"),
+             (now + timedelta(days=1)).strftime("%Y-%m-%d")]
+    # Cache-first (Stage 1.2); fallback = original direct searches
+    records = _cache_window(_days, package="Private Transfer")
+    if records is None:
+        records = []
+        for day in _days:
+            criteria = (
+                "(Type_of_Package:equals:Private Transfer)"
+                f"and(Tour_Date:equals:{day})"
+            )
+            records.extend(zoho_search("Koh_Chang_Orders", criteria, fields))
 
     stats = {"emailed": 0, "skipped_no_email": 0, "skipped_outsourced": 0,
              "errors": 0, "candidates": []}
@@ -497,18 +527,21 @@ def approach_send():
         "Approach_Link_Sent,Chanel_of_booking,Status"
     )
 
-    # Same proven criteria shape as the n8n workflow; picklist values
-    # (Status) are filtered in Python — REST criteria on picklists is
-    # unreliable.
-    records = []
-    for day in [today, tomorrow]:
-        criteria = (
-            "(Type_of_Package:equals:Private Transfer)"
-            f"and(Tour_Date:equals:{day})"
-        )
-        records.extend(zoho_search("Koh_Chang_Orders", criteria, fields))
-
-    logger.info(f"[APPROACH-SEND] REST search returned {len(records)} records")
+    # Cache-first (Stage 1.2); fallback keeps the same proven criteria
+    # shape as the n8n workflow; picklist values (Status) are filtered in
+    # Python either way — REST criteria on picklists is unreliable.
+    records = _cache_window([today, tomorrow], package="Private Transfer")
+    if records is not None:
+        logger.info(f"[APPROACH-SEND] cache returned {len(records)} records")
+    else:
+        records = []
+        for day in [today, tomorrow]:
+            criteria = (
+                "(Type_of_Package:equals:Private Transfer)"
+                f"and(Tour_Date:equals:{day})"
+            )
+            records.extend(zoho_search("Koh_Chang_Orders", criteria, fields))
+        logger.info(f"[APPROACH-SEND] REST search returned {len(records)} records")
 
     sent = 0
     candidates = []

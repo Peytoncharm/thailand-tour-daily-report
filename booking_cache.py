@@ -159,6 +159,31 @@ def get_booking(booking_id: str):
     return rec
 
 
+def update_cached_field(booking_id: str, field: str, value) -> bool:
+    """Patch ONE field inside the cached payload right after a Zoho write.
+    Race fix for the cron family: approach-send flags a booking at :10,
+    auto-rebroadcast reads the cache at :13 — without this patch it would
+    not see the flag until the :18 sweep and could re-fire the job.
+    DB-local write only (zero Zoho traffic). Never raises."""
+    if not booking_id or not field:
+        return False
+    try:
+        from db import _get_pool
+        pool = _get_pool()
+        if pool is None:
+            return False
+        with pool.connection() as conn:
+            conn.execute(
+                "UPDATE booking_cache SET payload = jsonb_set(payload, %s, %s::jsonb) "
+                "WHERE booking_id = %s",
+                ([field], json.dumps(value), booking_id),
+            )
+        return True
+    except Exception as e:
+        logger.warning(f"[CACHE] field patch {booking_id}.{field} failed: {e}")
+        return False
+
+
 def get_bookings_for_dates(dates, type_of_package=None):
     """All cached bookings whose Tour_Date is in `dates` (list of
     'YYYY-MM-DD'), optionally filtered by Type_of_Package. Returns raw
