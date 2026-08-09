@@ -3,5 +3,7 @@ gunicorn==21.2.0
 requests==2.31.0
 gspread==6.1.4
 google-auth==2.38.0
-psycopg[binary]==3.2.4
-psycopg-pool==3.2.4
+# Ranges, not exact pins: the 4c59b21 build died on a pin that pip could
+# not resolve. Any 3.2.x works for us; let pip pick an existing one.
+psycopg[binary]>=3.2,<3.3
+psycopg-pool>=3.2,<3.3

@@ -47,7 +47,15 @@ ensure_schema_async()  # idempotent DDL in a daemon thread; no-op without DATABA
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "thailand-tour-daily-report"}), 200
+    # "commit" = short hash of the RUNNING deploy (Render sets
+    # RENDER_GIT_COMMIT). Lets anyone verify live-vs-pushed from outside —
+    # added after the 4c59b21 build failure went unnoticed because no
+    # public signal distinguished old code from new.
+    return jsonify({
+        "status": "ok",
+        "service": "thailand-tour-daily-report",
+        "commit": os.environ.get("RENDER_GIT_COMMIT", "")[:7],
+    }), 200
 
 
 @app.route("/cron/daily-reconciliation", methods=["GET"])
