@@ -305,6 +305,23 @@ def gps_ingest(secret):
     if batt is not None:
         entry["batt"] = batt
 
+    # DUAL-WRITE to Postgres (Stage 1.1), off-thread — in-memory store above
+    # stays the read source; a dead DB costs a log line, never a failed ping
+    # TODO(scale): thread-per-ping is fine at pilot volume (~1-2/s). At full
+    # 500-jobs/day volume, switch to a batched writer (in-process queue +
+    # single flusher thread doing multi-row INSERTs every few seconds) so we
+    # don't spawn 90k threads/day or hold a pool slot per ping.
+    try:
+        import db as _gpsdb
+        if _gpsdb.enabled():
+            threading.Thread(
+                target=_gpsdb.insert_position,
+                args=(device_id, point, batt),
+                daemon=True,
+            ).start()
+    except Exception as _db_err:
+        logger.warning(f"[GPS-DB] dual-write dispatch failed: {_db_err}")
+
     # Throttled Zoho write-back, off-thread
     last_wb = entry["last_writeback"]
     if last_wb is None or (now - last_wb).total_seconds() >= ZOHO_WRITEBACK_SECONDS:
@@ -327,6 +344,14 @@ def gps_status(code):
     if cron_secret and request.args.get("key", "") != cron_secret:
         return jsonify({"error": "unauthorized"}), 401
 
+    # Phase-B verification: memory vs Postgres at a glance
+    def _db_section(c):
+        try:
+            import db as _gpsdb
+            return _gpsdb.db_status(c)
+        except Exception as e:
+            return {"enabled": False, "error": str(e)[:80]}
+
     code = (code or "").strip().upper()
     entry = POSITIONS.get(code)
     if not entry:
@@ -334,6 +359,7 @@ def gps_status(code):
             "code": code,
             "tracking": False,
             "known_provider": _lookup_code(code) is not None,
+            "db": _db_section(code),
         }), 200
 
     last = entry["points"][-1] if entry["points"] else None
@@ -347,4 +373,5 @@ def gps_status(code):
         "batt": entry["batt"],
         "last_point": last,
         "last_writeback_utc": entry["last_writeback"].isoformat() if entry["last_writeback"] else None,
+        "db": _db_section(code),
     }), 200

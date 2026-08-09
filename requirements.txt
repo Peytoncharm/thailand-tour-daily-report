@@ -3,3 +3,5 @@ gunicorn==21.2.0
 requests==2.31.0
 gspread==6.1.4
 google-auth==2.38.0
+psycopg[binary]==3.2.4
+psycopg-pool==3.2.4

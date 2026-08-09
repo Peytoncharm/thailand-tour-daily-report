@@ -40,6 +40,10 @@ app.register_blueprint(gps_bp)
 from customer_track import customer_bp
 app.register_blueprint(customer_bp)
 
+from db import db_bp, ensure_schema_async
+app.register_blueprint(db_bp)
+ensure_schema_async()  # idempotent DDL in a daemon thread; no-op without DATABASE_URL
+
 
 @app.route("/", methods=["GET"])
 def health():
