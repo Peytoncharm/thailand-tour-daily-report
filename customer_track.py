@@ -81,20 +81,13 @@ def _fetch_info(booking_id: str) -> dict:
         "car_registration": "", "driver_phone": "",
     }
     try:
-        from zoho_thailand import _get_access_token, ZOHO_API_BASE
-        token = _get_access_token()
-        if not token:
+        # Stage 1.2 Task 2: cache-first booking read (get_booking falls back
+        # to one direct Zoho read + self-healing upsert on miss/DB failure,
+        # so degraded behaviour == the old direct fetch).
+        from booking_cache import get_booking
+        b = get_booking(booking_id)
+        if not b:
             return info
-        resp = requests.get(
-            f"{ZOHO_API_BASE}/Koh_Chang_Orders/{booking_id}",
-            headers={"Authorization": f"Zoho-oauthtoken {token}"},
-            params={"fields": "Name,Pickup_Date_Time,Tour_Date,Pickup_Location,"
-                    "Provider_List,Status"},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            return info
-        b = (resp.json().get("data") or [{}])[0]
         info["found"] = True
         info["customer_first"] = ((b.get("Name") or "").strip().split(" ") or [""])[0]
         info["tour_date"] = (b.get("Tour_Date") or "").split("T")[0]
@@ -108,21 +101,41 @@ def _fetch_info(booking_id: str) -> dict:
         prov = b.get("Provider_List")
         if isinstance(prov, dict) and prov.get("id"):
             info["provider_id"] = prov["id"]
-            resp2 = requests.get(
-                f"{ZOHO_API_BASE}/Providers/{prov['id']}",
-                headers={"Authorization": f"Zoho-oauthtoken {token}"},
-                params={"fields": "Name,Provider_Code,Phone_1,Car_Model,"
-                        "Car_Colour,Vehicle_Registration"},
-                timeout=10,
-            )
-            if resp2.status_code == 200:
-                p = (resp2.json().get("data") or [{}])[0]
-                info["driver_first"] = ((p.get("Name") or "").strip().split(" ") or [""])[0]
-                info["provider_code"] = (p.get("Provider_Code") or "").strip().upper() or None
-                info["car_model"] = (p.get("Car_Model") or "").strip()
-                info["car_colour"] = (p.get("Car_Colour") or "").strip()
-                info["car_registration"] = (p.get("Vehicle_Registration") or "").strip()
-                info["driver_phone"] = (p.get("Phone_1") or "").strip()
+            # Provider details from the in-memory registry (hourly refresh,
+            # now carries phone/vehicle fields). Registry miss -> original
+            # direct Zoho fetch, verbatim.
+            entry = None
+            try:
+                from gps_ingest import provider_entry_for_id
+                entry = provider_entry_for_id(prov["id"])
+            except Exception:
+                entry = None
+            if entry:
+                info["driver_first"] = ((entry.get("name") or "").strip().split(" ") or [""])[0]
+                info["provider_code"] = (entry.get("code") or "").strip().upper() or None
+                info["car_model"] = entry.get("car_model") or ""
+                info["car_colour"] = entry.get("car_colour") or ""
+                info["car_registration"] = entry.get("car_registration") or ""
+                info["driver_phone"] = entry.get("phone") or ""
+            else:
+                from zoho_thailand import _get_access_token, ZOHO_API_BASE
+                token = _get_access_token()
+                if token:
+                    resp2 = requests.get(
+                        f"{ZOHO_API_BASE}/Providers/{prov['id']}",
+                        headers={"Authorization": f"Zoho-oauthtoken {token}"},
+                        params={"fields": "Name,Provider_Code,Phone_1,Car_Model,"
+                                "Car_Colour,Vehicle_Registration"},
+                        timeout=10,
+                    )
+                    if resp2.status_code == 200:
+                        p = (resp2.json().get("data") or [{}])[0]
+                        info["driver_first"] = ((p.get("Name") or "").strip().split(" ") or [""])[0]
+                        info["provider_code"] = (p.get("Provider_Code") or "").strip().upper() or None
+                        info["car_model"] = (p.get("Car_Model") or "").strip()
+                        info["car_colour"] = (p.get("Car_Colour") or "").strip()
+                        info["car_registration"] = (p.get("Vehicle_Registration") or "").strip()
+                        info["driver_phone"] = (p.get("Phone_1") or "").strip()
     except Exception as e:
         logger.error(f"[CUSTOMER-TRACK] Info fetch error {booking_id}: {e}")
 

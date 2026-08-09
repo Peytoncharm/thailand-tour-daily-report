@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS pickup_points (
   imported_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE pickup_points ADD COLUMN IF NOT EXISTS precision text;
+ALTER TABLE booking_cache ADD COLUMN IF NOT EXISTS geocode_precision text;
 
 CREATE TABLE IF NOT EXISTS alert_log (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

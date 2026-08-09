@@ -110,6 +110,7 @@ def _maybe_geocode(rec: dict, cols: dict):
             return
         cols["pickup_lat"] = m["pickup_lat"]
         cols["pickup_lng"] = m["pickup_lng"]
+        cols["geocode_precision"] = m.get("geocode_precision")
 
         def _zoho_write():
             try:
@@ -154,8 +155,8 @@ def upsert_record(rec: dict) -> bool:
                 INSERT INTO booking_cache
                   (booking_id, provider_id, driver_id, tour_date, pickup_ts,
                    status, type_of_package, pickup_lat, pickup_lng,
-                   payload, refreshed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
+                   geocode_precision, payload, refreshed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
                 ON CONFLICT (booking_id) DO UPDATE SET
                   provider_id = EXCLUDED.provider_id,
                   driver_id = EXCLUDED.driver_id,
@@ -165,13 +166,16 @@ def upsert_record(rec: dict) -> bool:
                   type_of_package = EXCLUDED.type_of_package,
                   pickup_lat = COALESCE(EXCLUDED.pickup_lat, booking_cache.pickup_lat),
                   pickup_lng = COALESCE(EXCLUDED.pickup_lng, booking_cache.pickup_lng),
+                  geocode_precision = COALESCE(EXCLUDED.geocode_precision,
+                                               booking_cache.geocode_precision),
                   payload = EXCLUDED.payload,
                   refreshed_at = now()
                 """,
                 (cols["booking_id"], cols["provider_id"], cols["driver_id"],
                  cols["tour_date"], cols["pickup_ts"], cols["status"],
                  cols["type_of_package"], cols.get("pickup_lat"),
-                 cols.get("pickup_lng"), json.dumps(rec)),
+                 cols.get("pickup_lng"), cols.get("geocode_precision"),
+                 json.dumps(rec)),
             )
         return True
     except Exception as e:

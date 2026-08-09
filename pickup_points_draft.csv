@@ -21,4 +21,6 @@ krung thep aphiwat,13.803690,100.542270,good,"",exact
 koh kood ao salad pier,11.707500,102.570770,good,"",exact
 laem sok pier,12.044249,102.584356,confirmed,"Corrected 9 Aug",exact
 trat bus terminal,12.2405,102.5065,confirmed,"",exact
-koh chang generic,12.050000,102.310000,good,"Island-level catch-all (decision 1, 9 Aug) - west-coast midpoint, CONFIRM pin",generic
+koh chang generic,12.050000,102.290000,good,"Island catch-all on the west-coast resort strip - corrected & confirmed by Orathai 9 Aug",generic
+bailan beach,11.992264,102.298658,good,"Web-verified pin (iamkohchang/explorekohchang), approved by Orathai 9 Aug",zone
+trat airport,12.274572,102.318958,good,"Web-verified (Wikipedia/VTBO), approved by Orathai 9 Aug",exact

@@ -65,11 +65,13 @@ ZONE_KEYWORDS = {
     "klong prao": ["klong prao", "klong proa", "klong prow", "klong praow"],
     "kai bae": ["kai bae", "kaibae", "kae bae", "kea bae", "ka bae", "kaibea",
                 "kai bea", "ไก่แบ้"],
-    "lonely beach": ["lonely beach", "bailan"],
+    "lonely beach": ["lonely beach"],
+    "bailan beach": ["bailan"],   # own zone since 9 Aug (row 24)
     "bang bao pier": ["bang bao", "bangbao", "bang boa"],
     "salak phet": ["salak phet", "salakphed", "salakphet"],
     "klong son": ["klong son", "คลองสน"],
     "pattaya": ["pattaya", "jomtien", "พัทยา"],
+    "trat airport": ["trat airport", "trad airport", "trat air port"],  # before trat town
     "trat town": ["trat town", "trat bus", "trad bus", "trat station"],
     "chanthaburi": ["chanthaburi", "จันทบุรี"],
     "rayong": ["rayong"],
@@ -100,7 +102,8 @@ RESORT_ALIASES = {
     "snook sanang": ("kai bae", "geo"),
     "seabreeze": ("kai bae", "geo"), "sea breeze": ("kai bae", "geo"),
     "seebreaze": ("kai bae", "geo"),
-    "coral resort": ("kai bae", "geo"), "porn": ("kai bae", "geo"),
+    "coral resort": ("kai bae", "geo"),
+    "porn": ("kai bae", "geo"), "porns": ("kai bae", "geo"),
     "cj kai": ("kai bae", "data"), "jop": ("kai bae", "data"),
     "kst": ("kai bae", "data"), "the green resort": ("kai bae", "data"),
     "green resort": ("kai bae", "data"),
@@ -111,20 +114,23 @@ RESORT_ALIASES = {
     "centara": ("klong prao", "geo"), "flora": ("klong prao", "geo"),
     "barali": ("klong prao", "geo"), "aana": ("klong prao", "geo"),
     "the stage": ("klong prao", "geo"), "stage hotel": ("klong prao", "geo"),
-    "hotel stage": ("klong prao", "geo"), "the retreat": ("klong prao", "geo"),
-    "retreat hotel": ("klong prao", "geo"), "retreat resort": ("klong prao", "geo"),
+    "hotel stage": ("klong prao", "geo"),
+    # Orathai corrections 9 Aug: The Retreat is KAI BAE, Magic is KLONG PRAO
+    "the retreat": ("kai bae", "orathai"),
+    "retreat hotel": ("kai bae", "orathai"), "retreat resort": ("kai bae", "orathai"),
     "annika": ("klong prao", "geo"), "elephant bay": ("klong prao", "geo"),
     "sofia": ("klong prao", "geo"), "kp huts": ("klong prao", "geo"),
     "tranquility": ("klong prao", "geo"), "sea-son": ("klong prao", "geo"),
     "sea - son": ("klong prao", "geo"), "sea-sun": ("klong prao", "geo"),
-    "chor chaba": ("klong prao", "geo"), "mercure": ("klong prao", "geo"),
+    "chor chaba": ("klong prao", "geo"),
+    "mercure": ("bailan beach", "orathai"),   # Hideaway is Bailan Bay (9 Aug)
     "ban klong kok": ("klong prao", "geo"),
     "siam bay": ("lonely beach", "geo"), "siam beach": ("lonely beach", "geo"),
     "nature beach": ("lonely beach", "geo"), "bhumiyama": ("lonely beach", "geo"),
     "bhuriyama": ("lonely beach", "geo"), "oasis": ("lonely beach", "geo"),
     "sunstone": ("lonely beach", "geo"), "sun stone": ("lonely beach", "geo"),
     "slumber": ("lonely beach", "geo"), "cher guesthouse": ("lonely beach", "geo"),
-    "magic": ("lonely beach", "geo"),
+    "magic": ("klong prao", "orathai"),
     "little bungalow": ("lonely beach", "geo"), "fine times": ("lonely beach", "geo"),
     "siam royal": ("white sand beach", "geo"),
     "cliff cottage": ("bang bao pier", "geo"),
@@ -141,21 +147,42 @@ def _norm(s):
 
 
 def classify(value):
-    """Free text → (zone_name, tier) or (None, None).
-    tier ∈ {'zone', 'alias-data', 'alias-geo', 'generic'}."""
+    """Free text → (zone_name, tier, matched_keyword) or (None, None, None).
+    tier ∈ {'zone', 'alias-data', 'alias-geo', 'alias-orathai', 'generic'}."""
     v = _norm(value)
     if not v or v in ("-", "na", "n/a", "none"):
-        return None, None
+        return None, None, None
     for zone, kws in ZONE_KEYWORDS.items():
         for kw in [zone] + kws:
             if kw and kw in v:
-                return zone, "zone"
+                return zone, "zone", kw
     for alias, (zone, ev) in RESORT_ALIASES.items():
-        if alias in v:
-            return zone, f"alias-{ev}"
+        # Word-boundary match: plain substring made "awa" fire inside
+        # "hideAWAy" (caught 9 Aug on Mercure Hideaway). Zone keywords
+        # above keep substring semantics deliberately (kaibae etc.).
+        if re.search(r"\b" + re.escape(alias.strip()) + r"\b", v):
+            return zone, f"alias-{ev}", alias.strip()
     if _GENERIC_RE.search(v):
-        return "koh chang generic", "generic"
-    return None, None
+        return "koh chang generic", "generic", "koh chang"
+    return None, None, None
+
+
+# Geocode-upgrade spec (Orathai, 9 Aug): bare zone/resort name -> the zone
+# pin IS the final pin; name + extra detail (room number, address...) ->
+# zone pin now, flagged 'upgrade-pending' for precise per-booking geocoding
+# once an API provider is chosen. Filler tokens don't count as "extra".
+_FILLER_RE = re.compile(
+    r"\b(resort|hotel|bungalows?|guesthouse|guest|house|beach|koh|chang"
+    r"|the|spa|and|pier|airport|terminal|bus)\b"
+    r"|[#./()\\,:'&+-]+")
+# NOTE deliberately NOT filler: room/rm/no/number and digits — per the
+# confirmed spec those count as "extra" and flag upgrade-pending.
+
+def _is_bare_name(norm_value, matched_kw):
+    residue = norm_value.replace(matched_kw or "", "")
+    residue = _FILLER_RE.sub(" ", residue)
+    residue = re.sub(r"\s+", "", residue)
+    return len(residue) <= 3
 
 
 def match_booking(pickup_text, dropoff_text):
@@ -165,15 +192,19 @@ def match_booking(pickup_text, dropoff_text):
     route_key derives only when BOTH ends matched. Never raises."""
     out = {"pickup_zone": None, "pickup_lat": None, "pickup_lng": None,
            "pickup_precision": None, "pickup_tier": None,
-           "dropoff_zone": None, "dropoff_tier": None, "route_key": None}
+           "dropoff_zone": None, "dropoff_tier": None, "route_key": None,
+           "geocode_precision": None}   # 'final' | 'upgrade-pending'
     try:
         pts = _load_points()
-        pz, ptier = classify(pickup_text)
-        dz, dtier = classify(dropoff_text)
+        pz, ptier, pkw = classify(pickup_text)
+        dz, dtier, _dkw = classify(dropoff_text)
         if pz and pz in pts:
             out.update(pickup_zone=pz, pickup_tier=ptier,
                        pickup_lat=pts[pz]["lat"], pickup_lng=pts[pz]["lng"],
                        pickup_precision=pts[pz]["precision"])
+            out["geocode_precision"] = (
+                "final" if _is_bare_name(_norm(pickup_text), pkw)
+                else "upgrade-pending")
         elif pz:  # zone known but not in table (shouldn't happen)
             out.update(pickup_zone=pz, pickup_tier=ptier)
         if dz:

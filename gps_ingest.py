@@ -83,7 +83,8 @@ def _refresh_providers(force=False):
         from zoho_thailand import zoho_get_records
         records = zoho_get_records(
             "Providers",
-            fields="id,Name,Provider_Code,Outsourced_Agent,Line_User_ID",
+            fields="id,Name,Provider_Code,Outsourced_Agent,Line_User_ID,"
+                   "Phone_1,Car_Model,Car_Colour,Vehicle_Registration",
             max_pages=10,
         )
     except Exception as e:
@@ -100,7 +101,11 @@ def _refresh_providers(force=False):
         if not code or not pid:
             continue
         entry = {"id": pid, "name": (r.get("Name") or "").strip(), "code": code,
-                 "line_user_id": (r.get("Line_User_ID") or "").strip()}
+                 "line_user_id": (r.get("Line_User_ID") or "").strip(),
+                 "phone": (r.get("Phone_1") or "").strip(),
+                 "car_model": (r.get("Car_Model") or "").strip(),
+                 "car_colour": (r.get("Car_Colour") or "").strip(),
+                 "car_registration": (r.get("Vehicle_Registration") or "").strip()}
         by_code[code] = entry
         by_id[pid] = entry
 
