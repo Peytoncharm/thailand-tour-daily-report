@@ -93,6 +93,50 @@ def _extract_columns(rec: dict):
     }
 
 
+def _maybe_geocode(rec: dict, cols: dict):
+    """Stage 1.3 step 6 — KILL SWITCH: runs only when GEOCODE_ENABLED=true.
+    If the booking has no Pickup_Lat yet, classify pickup+dropoff via
+    pickup_matcher and (a) put coords on the cache row, (b) write
+    Pickup_Lat/Lng/Zone + Route_Key back to Zoho ONCE per booking
+    (trigger:[] so no workflow rules fire — loop-safe). Never raises."""
+    if os.environ.get("GEOCODE_ENABLED", "").lower() != "true":
+        return
+    try:
+        if rec.get("Pickup_Lat") is not None:
+            return  # already geocoded
+        from pickup_matcher import match_booking
+        m = match_booking(rec.get("Pickup_Location"), rec.get("Dropoff_Location"))
+        if not m.get("pickup_zone"):
+            return
+        cols["pickup_lat"] = m["pickup_lat"]
+        cols["pickup_lng"] = m["pickup_lng"]
+
+        def _zoho_write():
+            try:
+                import requests as _rq
+                from zoho_thailand import _get_access_token, ZOHO_API_BASE
+                token = _get_access_token()
+                if not token:
+                    return
+                fields = {"Pickup_Lat": m["pickup_lat"],
+                          "Pickup_Lng": m["pickup_lng"],
+                          "Pickup_Zone": m["pickup_zone"]}
+                if m.get("route_key"):
+                    fields["Route_Key"] = m["route_key"]
+                _rq.put(f"{ZOHO_API_BASE}/Koh_Chang_Orders/{rec['id']}",
+                        headers={"Authorization": f"Zoho-oauthtoken {token}",
+                                 "Content-Type": "application/json"},
+                        json={"data": [fields], "trigger": []}, timeout=10)
+                logger.info(f"[GEOCODE] {rec['id']}: {m['pickup_zone']} "
+                            f"({m['pickup_precision']}) route={m.get('route_key')}")
+            except Exception as e:
+                logger.warning(f"[GEOCODE] Zoho write failed {rec.get('id')}: {e}")
+        import threading as _th
+        _th.Thread(target=_zoho_write, daemon=True).start()
+    except Exception as e:
+        logger.warning(f"[GEOCODE] match failed {rec.get('id')}: {e}")
+
+
 def upsert_record(rec: dict) -> bool:
     """UPSERT one raw Zoho record into booking_cache. Never raises."""
     if not isinstance(rec, dict) or not rec.get("id"):
@@ -103,13 +147,15 @@ def upsert_record(rec: dict) -> bool:
         if pool is None or not ensure_schema():
             return False
         cols = _extract_columns(rec)
+        _maybe_geocode(rec, cols)
         with pool.connection() as conn:
             conn.execute(
                 """
                 INSERT INTO booking_cache
                   (booking_id, provider_id, driver_id, tour_date, pickup_ts,
-                   status, type_of_package, payload, refreshed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
+                   status, type_of_package, pickup_lat, pickup_lng,
+                   payload, refreshed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
                 ON CONFLICT (booking_id) DO UPDATE SET
                   provider_id = EXCLUDED.provider_id,
                   driver_id = EXCLUDED.driver_id,
@@ -117,12 +163,15 @@ def upsert_record(rec: dict) -> bool:
                   pickup_ts = EXCLUDED.pickup_ts,
                   status = EXCLUDED.status,
                   type_of_package = EXCLUDED.type_of_package,
+                  pickup_lat = COALESCE(EXCLUDED.pickup_lat, booking_cache.pickup_lat),
+                  pickup_lng = COALESCE(EXCLUDED.pickup_lng, booking_cache.pickup_lng),
                   payload = EXCLUDED.payload,
                   refreshed_at = now()
                 """,
                 (cols["booking_id"], cols["provider_id"], cols["driver_id"],
                  cols["tour_date"], cols["pickup_ts"], cols["status"],
-                 cols["type_of_package"], json.dumps(rec)),
+                 cols["type_of_package"], cols.get("pickup_lat"),
+                 cols.get("pickup_lng"), json.dumps(rec)),
             )
         return True
     except Exception as e:

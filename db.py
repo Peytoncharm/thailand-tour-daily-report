@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS pickup_points (
   verify_note text,
   imported_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE pickup_points ADD COLUMN IF NOT EXISTS precision text;
 
 CREATE TABLE IF NOT EXISTS alert_log (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -197,18 +198,20 @@ def import_pickup_points():
             for r in rows:
                 conn.execute(
                     """
-                    INSERT INTO pickup_points (place_name, lat, lng, confidence, verify_note)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO pickup_points (place_name, lat, lng, confidence, verify_note, precision)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (place_name) DO UPDATE SET
                       lat = EXCLUDED.lat, lng = EXCLUDED.lng,
                       confidence = EXCLUDED.confidence,
                       verify_note = EXCLUDED.verify_note,
+                      precision = EXCLUDED.precision,
                       imported_at = now()
                     """,
                     ((r.get("place_name") or "").strip().lower(),
                      float(r["lat"]), float(r["lng"]),
                      (r.get("confidence") or "").strip(),
-                     (r.get("verify_note") or "").strip()),
+                     (r.get("verify_note") or "").strip(),
+                     (r.get("precision") or "zone").strip().lower()),
                 )
         logger.info(f"[GPS-DB] pickup_points imported: {len(rows)} rows")
         return len(rows)
