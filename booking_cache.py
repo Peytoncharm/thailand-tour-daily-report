@@ -291,6 +291,35 @@ def webhook_booking_cache_upsert():
     return jsonify({"ok": ok, "booking_id": booking_id}), 200
 
 
+def _remove_missing_for_date(day, present_ids):
+    """Delete cache rows for `day` whose booking_id is NOT in the
+    non-empty Zoho fetch result. Caller guarantees present_ids is
+    non-empty (the fail-safe). Logs every removed id. Never raises."""
+    try:
+        from db import _get_pool
+        pool = _get_pool()
+        if pool is None:
+            return 0
+        with pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT booking_id FROM booking_cache WHERE tour_date = %s",
+                (day,),
+            ).fetchall()
+            missing = [r[0] for r in rows if r[0] not in present_ids]
+            if not missing:
+                return 0
+            for bid in missing:
+                logger.info(f"[CACHE] deletion-sync: removing ghost booking {bid} (date {day})")
+            conn.execute(
+                "DELETE FROM booking_cache WHERE booking_id = ANY(%s)",
+                (missing,),
+            )
+        return len(missing)
+    except Exception as e:
+        logger.warning(f"[CACHE] deletion-sync failed for {day} (nothing removed): {e}")
+        return 0
+
+
 @booking_cache_bp.route("/cron/booking-cache-sweep", methods=["GET", "POST"])
 def cron_booking_cache_sweep():
     """Every 15 min via cron-job.org: refresh today+tomorrow bookings
@@ -302,15 +331,25 @@ def cron_booking_cache_sweep():
     now = datetime.now(ict)
     days = [now.strftime("%Y-%m-%d"),
             (now + timedelta(days=1)).strftime("%Y-%m-%d")]
-    fetched, cached = 0, 0
+    fetched, cached, removed = 0, 0, 0
     try:
         from zoho_thailand import zoho_search
         for day in days:
             records = zoho_search("Koh_Chang_Orders", f"(Tour_Date:equals:{day})")
             fetched += len(records)
+            day_ids = set()
             for rec in records:
                 if upsert_record(rec):
                     cached += 1
+                if rec.get("id"):
+                    day_ids.add(str(rec["id"]))
+            # CONTROLLED deletion-sync (Orathai, 10 Aug): remove cache rows
+            # for this date that Zoho no longer has (ghost bookings). FAIL
+            # SAFE: an empty or failed fetch deletes NOTHING — zoho_search
+            # returns [] on error too, so "non-empty set only" covers both
+            # ambiguity cases. Every deletion is logged with its id.
+            if day_ids:
+                removed += _remove_missing_for_date(day, day_ids)
     except Exception as e:
         logger.error(f"[CACHE] sweep failed: {e}")
         return jsonify({"ok": False, "reason": str(e)[:200],
@@ -322,6 +361,7 @@ def cron_booking_cache_sweep():
         logger.error(f"[CACHE] sweep cached NOTHING (fetched={fetched}) — failing loud")
         return jsonify({"ok": False, "reason": "fetched>0 but cached==0 (cache dead?)",
                         "fetched": fetched, "cached": cached}), 500
-    logger.info(f"[CACHE] sweep done: fetched={fetched} cached={cached}")
+    logger.info(f"[CACHE] sweep done: fetched={fetched} cached={cached} removed={removed}")
     return jsonify({"ok": True, "days": days,
-                    "fetched": fetched, "cached": cached}), 200
+                    "fetched": fetched, "cached": cached,
+                    "removed": removed}), 200

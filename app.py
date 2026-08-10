@@ -50,6 +50,9 @@ app.register_blueprint(booking_cache_bp)
 from dashboard import dashboard_bp
 app.register_blueprint(dashboard_bp)
 
+from eta_checkpoints import eta_bp
+app.register_blueprint(eta_bp)
+
 # --- Readiness gate (Task 1, 9 Aug): Render used port-open to decide
 # "live", so the first requests after a deploy paid Zoho-token + provider-
 # registry + DB-pool cold costs and cron cycles timed out (17:33 sweep,

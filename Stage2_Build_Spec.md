@@ -13,7 +13,7 @@ DOCUMENT ONLY: nothing in this file is built, deployed, or approved yet.
 | D4 Alert recipients / quiet hours | **Team ops LINE group; NO quiet hours** |
 | D5 Budget overflow at 20/day cap | **Digest mode** (suppressed alerts collected into a digest line) |
 | Go-live policy | **Shadow until an evidence gate on real bookings** (per-step gates in §3 stand) |
-| NEW — signal-age escalation ladder | **20/30/45 min: 20=stale (consistent with D7 1200s) → 30=driver nudge → 45=team alert; suppressed during detected ferry crossing.** *Interpretation flagged — confirm in one line.* |
+| Signal-age escalation ladder — **CONFIRMED 10 Aug** | **20 min = stale/red dot (matches D7 1200 s) → 30 min = automated LINE nudge to DRIVER → 45 min = team alert ONLY when inside T-120 of a pickup; ferry-crossing exempt throughout.** |
 | D-P1 Ferry constants | **First 06:30 / last 18:30; positioning deadline = 17:45 boat the evening before** — Orathai-provided values (NOT web-verified yet; check against operator schedule before P-A gate closes) |
 | D-P2 Island cutoff | **09:00** (caseload ≈132 island pickups/34% — accepted) |
 | D-P3 Commercial | **Bundling-first, no positioning allowance yet** |
