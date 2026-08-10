@@ -38,6 +38,24 @@
   #stamp { position: absolute; bottom: 14px; right: 14px; z-index: 1000;
     color: var(--muted); font-size: 11px; background: var(--panel2);
     border: 1px solid #1d2233; border-radius: 8px; padding: 6px 10px; }
+  /* Slice 2 */
+  #filters { position: absolute; top: 48px; left: 14px; z-index: 1000;
+    background: var(--panel2); border: 1px solid #1d2233; border-radius: 10px;
+    padding: 8px 10px; font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .fbtn { background: var(--panel); color: var(--muted); border: 1px solid #1d2233;
+    border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  .fbtn.on { color: var(--text); border-color: #3a4468; background: #1a1f33; }
+  .bpin { border-radius: 4px; border: 2px solid; width: 14px; height: 14px;
+    transform: rotate(45deg); box-shadow: 0 0 6px rgba(0,0,0,.6); }
+  #nocoords { position: absolute; top: 48px; right: 14px; z-index: 1000;
+    background: var(--panel2); border: 1px solid #1d2233; border-radius: 10px;
+    padding: 8px 12px; font-size: 12px; max-width: 260px; max-height: 45vh;
+    overflow-y: auto; }
+  #nocoords h3 { font-size: 12px; color: var(--muted); font-weight: 600;
+    margin-bottom: 6px; }
+  #nocoords .row { border-top: 1px solid #1d2233; padding: 5px 0;
+    color: var(--text); }
+  #nocoords .row .m { color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -52,6 +70,18 @@
   <div><span class="dotk" style="background:var(--red)"></span> เกิน 20 นาที / ขาดสัญญาณ</div>
 </div>
 <div id="stamp">—</div>
+<div id="filters">
+  <button class="fbtn on" data-f="drivers">คนขับ</button>
+  <button class="fbtn on" data-f="bookings">งาน</button>
+  <button class="fbtn on" data-f="confirmed">Confirmed</button>
+  <button class="fbtn on" data-f="other">สถานะอื่น</button>
+  <button class="fbtn on" data-f="transfer">Transfer</button>
+  <button class="fbtn on" data-f="tour">Tour</button>
+</div>
+<div id="nocoords" style="display:none">
+  <h3>งานที่ยังไม่มีพิกัด (แสดงบนแผนที่ไม่ได้)</h3>
+  <div id="nclist"></div>
+</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -64,7 +94,31 @@
     maxZoom: 18, attribution: "&copy; OpenStreetMap"
   }).addTo(map);
 
-  const markers = new Map();  // code -> circleMarker
+  const markers = new Map();   // driver code -> circleMarker
+  const bmarkers = new Map();  // booking_id -> marker
+  const F = { drivers: true, bookings: true, confirmed: true, other: true,
+              transfer: true, tour: true };
+  document.querySelectorAll(".fbtn").forEach(b => b.addEventListener("click", () => {
+    F[b.dataset.f] = !F[b.dataset.f];
+    b.classList.toggle("on", F[b.dataset.f]);
+    refresh();
+  }));
+
+  function bookingVisible(bk) {
+    if (!F.bookings) return false;
+    const conf = (bk.status || "").toLowerCase() === "confirmed";
+    if (conf && !F.confirmed) return false;
+    if (!conf && !F.other) return false;
+    const isTransfer = (bk.type || "").toLowerCase().includes("transfer");
+    if (isTransfer && !F.transfer) return false;
+    if (!isTransfer && !F.tour) return false;
+    return true;
+  }
+
+  function bookingColour(bk) {
+    return (bk.status || "").toLowerCase() === "confirmed"
+      ? "#4da3ff" : getComputedStyle(document.documentElement).getPropertyValue("--grey").trim();
+  }
 
   function colourFor(age_s, t) {
     if (age_s == null) return getComputedStyle(document.documentElement).getPropertyValue("--grey");
@@ -107,10 +161,56 @@
         }
       }
       for (const [code, m] of markers) {
-        if (!seen.has(code)) { map.removeLayer(m); markers.delete(code); }
+        if (!seen.has(code) || !F.drivers) { map.removeLayer(m); markers.delete(code); }
       }
+
+      // ── Slice 2: booking pins + no-coords list ──
+      const bseen = new Set();
+      const nc = [];
+      for (const bk of (d.bookings || [])) {
+        if (bk.lat == null || bk.lng == null) {
+          if (bookingVisible(bk)) nc.push(bk);
+          continue;
+        }
+        if (!bookingVisible(bk)) continue;
+        bseen.add(bk.booking_id);
+        const col = bookingColour(bk);
+        const html = `<div class="pop"><b>${bk.name || "(ไม่มีชื่อ)"}</b>
+          <div class="m">${bk.type || "-"} · ${bk.status || "ไม่มีสถานะ"}<br>
+          ${bk.tour_date || ""} ⏰ ${bk.pickup_time || "-"}<br>
+          รับที่: ${bk.pickup_location || "-"}<br>
+          คนขับ: ${bk.driver || "ยังไม่มี"} · พิกัด: ${bk.precision || "-"}</div></div>`;
+        if (bmarkers.has(bk.booking_id)) {
+          const m = bmarkers.get(bk.booking_id);
+          m.setLatLng([bk.lat, bk.lng]);
+          m.setIcon(L.divIcon({ className: "",
+            html: `<div class="bpin" style="border-color:${col};background:${col}33"></div>`,
+            iconSize: [14, 14], iconAnchor: [7, 7] }));
+          m.getPopup().setContent(html);
+        } else {
+          const m = L.marker([bk.lat, bk.lng], { icon: L.divIcon({ className: "",
+            html: `<div class="bpin" style="border-color:${col};background:${col}33"></div>`,
+            iconSize: [14, 14], iconAnchor: [7, 7] }) }).addTo(map).bindPopup(html);
+          bmarkers.set(bk.booking_id, m);
+        }
+      }
+      for (const [bid, m] of bmarkers) {
+        if (!bseen.has(bid)) { map.removeLayer(m); bmarkers.delete(bid); }
+      }
+      const ncBox = document.getElementById("nocoords");
+      const ncList = document.getElementById("nclist");
+      if (nc.length) {
+        ncBox.style.display = "block";
+        ncList.innerHTML = nc.map(bk =>
+          `<div class="row">${bk.name || "(ไม่มีชื่อ)"}
+           <div class="m">${bk.tour_date || ""} ⏰ ${bk.pickup_time || "-"} · ${bk.status || "-"}<br>
+           ${bk.pickup_location || "(ไม่มีที่รับ)"}</div></div>`).join("");
+      } else {
+        ncBox.style.display = "none";
+      }
+
       document.getElementById("count").textContent =
-        d.drivers.length + " คนขับกำลังติดตาม";
+        d.drivers.length + " คนขับ · " + (d.bookings || []).length + " งานวันนี้/พรุ่งนี้";
       document.getElementById("stamp").textContent =
         "อัปเดต " + new Date().toLocaleTimeString("th-TH") + " · รีเฟรชทุก 30 วิ";
     } catch (e) {

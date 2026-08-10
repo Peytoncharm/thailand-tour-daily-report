@@ -50,6 +50,54 @@ def team_dashboard():
                            key=request.args.get("key", ""))
 
 
+def _bookings_today_tomorrow():
+    """Slice 2: today+tomorrow bookings from booking_cache. Bookings with
+    coordinates render as pins; the rest go to the no-coords list —
+    honest about what can't render (no guessed positions)."""
+    out = []
+    try:
+        from db import _get_pool
+        pool = _get_pool()
+        if pool is None:
+            return out
+        now = datetime.now(ICT)
+        days = [now.strftime("%Y-%m-%d"),
+                (now + timedelta(days=1)).strftime("%Y-%m-%d")]
+        with pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT booking_id, tour_date, pickup_ts, status, "
+                "type_of_package, pickup_lat, pickup_lng, geocode_precision, "
+                "driver_id, payload->>'Name', payload->>'Last_Name', "
+                "payload->>'Pickup_Location' "
+                "FROM booking_cache WHERE tour_date = ANY(%s) "
+                "ORDER BY pickup_ts NULLS LAST LIMIT 300",
+                (days,),
+            ).fetchall()
+        for (bid, tour_date, pickup_ts, status, pkg, lat, lng, prec,
+             driver_id, name, last_name, pickup_loc) in rows:
+            pickup_time = ""
+            try:
+                if pickup_ts:
+                    pickup_time = pickup_ts.astimezone(ICT).strftime("%H:%M")
+            except Exception:
+                pass
+            out.append({
+                "booking_id": bid,
+                "name": f"{(name or '').strip()} {(last_name or '').strip()}".strip(),
+                "tour_date": str(tour_date) if tour_date else None,
+                "pickup_time": pickup_time,
+                "status": (status or "").strip(),
+                "type": (pkg or "").strip(),
+                "lat": lat, "lng": lng,
+                "precision": prec,
+                "driver": driver_id,
+                "pickup_location": (pickup_loc or "").strip()[:60],
+            })
+    except Exception as e:
+        logger.error(f"[DASHBOARD] bookings query error: {e}")
+    return out
+
+
 @dashboard_bp.route("/team/dashboard/data", methods=["GET"])
 def team_dashboard_data():
     if not _check_key():
@@ -93,4 +141,5 @@ def team_dashboard_data():
         logger.error(f"[DASHBOARD] data error: {e}")
         return jsonify({"ok": False, "reason": str(e)[:120], "drivers": []}), 200
     return jsonify({"ok": True, "drivers": drivers,
+                    "bookings": _bookings_today_tomorrow(),
                     "thresholds": {"green_s": AGE_GREEN_S, "amber_s": AGE_AMBER_S}}), 200
