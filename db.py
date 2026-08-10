@@ -63,10 +63,20 @@ def _get_pool():
                                          # the purge's 3s budget lost that lottery
                 max_size=4,
                 timeout=3,               # max wait for a pooled connection
+                # 10 Aug hardening after the overnight wedge: validate on
+                # checkout so server-closed corpses are discarded...
+                check=ConnectionPool.check_connection,
                 kwargs={
                     "connect_timeout": 3,
                     "options": "-c statement_timeout=4000",
                     "application_name": "gps-dual-write",
+                    # ...and TCP keepalives so a dead link is detected in
+                    # ~60s instead of a thread blocking forever and eating
+                    # a pool slot (the overnight failure mode).
+                    "keepalives": 1,
+                    "keepalives_idle": 30,
+                    "keepalives_interval": 10,
+                    "keepalives_count": 3,
                 },
             )
             logger.info("[GPS-DB] connection pool created")
@@ -154,6 +164,32 @@ CREATE INDEX IF NOT EXISTS idx_alert_log_booking
 """
 
 
+_last_pool_reset = {"at": None}
+
+def report_pool_failure(err):
+    """Self-healing: on pool-acquire failure, discard and rebuild the pool
+    (rate-limited to once per 5 min so a hard DB outage doesn't thrash).
+    The overnight 9->10 Aug wedge stayed broken for hours because nothing
+    ever gave up on the dead pool."""
+    global _pool
+    try:
+        now = _now_utc()
+        with _pool_lock:
+            last = _last_pool_reset["at"]
+            if last and (now - last).total_seconds() < 300:
+                return
+            _last_pool_reset["at"] = now
+            old, _pool = _pool, None
+        logger.warning(f"[GPS-DB] pool reset triggered by: {str(err)[:120]}")
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def ensure_schema():
     """Idempotent DDL — safe to run on every boot. Never raises."""
     global _schema_ready
@@ -222,12 +258,15 @@ def import_pickup_points():
 
 
 def pickup_points_count():
-    """Row count for external verification (health endpoint). -1 = no DB."""
+    """Row count for external verification (health endpoint). -1 = no DB.
+    Dedicated connection (10 Aug): during the overnight wedge this was the
+    one external signal of pool death (-1); keeping it pool-independent
+    makes it a pure DB-server probe, while pool health is now visible via
+    the pool's own self-healing logs."""
+    if not DATABASE_URL:
+        return -1
     try:
-        pool = _get_pool()
-        if pool is None:
-            return -1
-        with pool.connection() as conn:
+        with _direct_conn("health-probe") as conn:
             return conn.execute("SELECT count(*) FROM pickup_points").fetchone()[0]
     except Exception:
         return -1
@@ -280,15 +319,30 @@ def insert_position(driver_id: str, point: dict, batt=None):
             )
     except Exception as e:
         logger.warning(f"[GPS-DB] insert_position failed for {driver_id}: {e}")
+        report_pool_failure(e)
+
+
+def _direct_conn(app_name):
+    """Dedicated connection outside the pool (the purge pattern) — for
+    low-frequency diagnostics that must keep working when the pool is
+    sick (Orathai instruction, 10 Aug)."""
+    import psycopg
+    return psycopg.connect(
+        DATABASE_URL,
+        connect_timeout=10,
+        options="-c statement_timeout=10000",
+        application_name=app_name,
+    )
 
 
 def db_status(driver_id: str) -> dict:
-    """Read-only stats for /gps/status debug route. Never raises."""
-    pool = _get_pool()
-    if pool is None:
+    """Read-only stats for /gps/status debug route. Never raises.
+    Runs on a DEDICATED connection so it reports truth even when the
+    pool is wedged."""
+    if not DATABASE_URL:
         return {"enabled": enabled(), "connected": False}
     try:
-        with pool.connection() as conn:
+        with _direct_conn("gps-status-probe") as conn:
             row = conn.execute(
                 "SELECT count(*), max(ts) FROM driver_positions WHERE driver_id = %s",
                 (driver_id,),

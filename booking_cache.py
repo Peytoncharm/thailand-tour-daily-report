@@ -180,6 +180,11 @@ def upsert_record(rec: dict) -> bool:
         return True
     except Exception as e:
         logger.warning(f"[CACHE] upsert {rec.get('id')} failed: {e}")
+        try:
+            from db import report_pool_failure
+            report_pool_failure(e)
+        except Exception:
+            pass
         return False
 
 
@@ -309,6 +314,13 @@ def cron_booking_cache_sweep():
     except Exception as e:
         logger.error(f"[CACHE] sweep failed: {e}")
         return jsonify({"ok": False, "reason": str(e)[:200],
+                        "fetched": fetched, "cached": cached}), 500
+    if fetched > 0 and cached == 0:
+        # 10 Aug: the overnight pool wedge hid behind 200s because
+        # upsert_record never raises. Zero cached out of N fetched is a
+        # dead cache — fail LOUD so cron-job.org alerts fire.
+        logger.error(f"[CACHE] sweep cached NOTHING (fetched={fetched}) — failing loud")
+        return jsonify({"ok": False, "reason": "fetched>0 but cached==0 (cache dead?)",
                         "fetched": fetched, "cached": cached}), 500
     logger.info(f"[CACHE] sweep done: fetched={fetched} cached={cached}")
     return jsonify({"ok": True, "days": days,
