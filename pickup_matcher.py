@@ -60,6 +60,7 @@ ZONE_KEYWORDS = {
                      "airport bangkok", "airport suvana", "airport suvanna", "สุวรรณภูมิ"],
     "don mueang": ["don mueang", "don mueng", "donmeung", "donmuang", "dmk"],
     "laem ngop pier": ["laem ngop", "lam ngop"],
+    "ao sapparot pier": ["ao sapparot", "sapparot", "sapporot", "อ่าวสับปะรด"],
     "ao thammachat pier": ["thammachat", "ao thammachat"],
     "white sand beach": ["white sand", "kc grand", "kacha", "cookies hotel", "cookie hotel"],
     "klong prao": ["klong prao", "klong proa", "klong prow", "klong praow"],
