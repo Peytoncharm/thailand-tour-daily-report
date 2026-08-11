@@ -31,6 +31,19 @@ EARLY_CUTOFF_MIN = 9 * 60      # island cutoff 09:00 (D-P2, locked)
 
 WINDOWS = [("T-30", 0, 30), ("T-60", 30, 60), ("T-90", 60, 90), ("T-120", 90, 120)]
 
+# ── Step 3: stage-1 free filter constants (D2 — proposed defaults,
+#    revisited against shadow data per the spec's Step-3 gate) ──
+STAGE1_SPEED_KMH = 45.0
+STAGE1_MARGIN = 1.6
+STALE_S = 1200            # D7: older position = no-signal, never "parked"
+
+# Koh Chang island bounding box (crude, shadow-tier; Koh Kood/Koh Mak
+# are outside and treated as ferry-needed by the side-of-water test)
+_ISL = (11.90, 12.16, 102.20, 102.45)
+
+def _on_island(lat, lng):
+    return _ISL[0] <= lat <= _ISL[1] and _ISL[2] <= lng <= _ISL[3]
+
 
 def _window_for(minutes_to_pickup):
     for name, lo, hi in WINDOWS:
@@ -47,6 +60,7 @@ def eta_checkpoints():
     suppressed = 0
     joined = 0
     examined = 0
+    stage1 = {"passed": 0, "at_risk": 0, "ferry_needed": 0, "no_gps": 0, "no_pin": 0}
     try:
         from booking_cache import get_bookings_for_dates
         from db import _get_pool
@@ -57,9 +71,9 @@ def eta_checkpoints():
             pool = _get_pool()
             if pool is not None:
                 with pool.connection() as conn:
-                    for code, ts in conn.execute(
-                            "SELECT driver_id, ts FROM driver_latest").fetchall():
-                        latest[code] = ts
+                    for code, ts, dlat, dlng in conn.execute(
+                            "SELECT driver_id, ts, lat, lng FROM driver_latest").fetchall():
+                        latest[code] = (ts, dlat, dlng)
         except Exception as e:
             logger.warning(f"[ETA-CP] driver_latest join failed: {e}")
 
@@ -103,10 +117,13 @@ def eta_checkpoints():
                 except Exception:
                     drv_code = None
             age_s = None
+            dpos = None
             if drv_code and drv_code in latest:
                 joined += 1
+                ts_, dlat_, dlng_ = latest[drv_code]
+                dpos = (dlat_, dlng_)
                 try:
-                    age_s = int((datetime.now(timezone.utc) - latest[drv_code]).total_seconds())
+                    age_s = int((datetime.now(timezone.utc) - ts_).total_seconds())
                 except Exception:
                     pass
 
@@ -122,6 +139,29 @@ def eta_checkpoints():
             # closes with actual_sec.
             _open_skeleton_row(b, win, drv_code)
 
+            # ── Step 3: stage-1 free filter (SHADOW — log + ledger only) ──
+            pin = _pickup_pin(b)
+            if pin is None:
+                stage1["no_pin"] += 1
+            elif dpos is None or age_s is None or age_s > STALE_S:
+                stage1["no_gps"] += 1
+            elif _on_island(dpos[0], dpos[1]) != _on_island(pin[0], pin[1]):
+                stage1["ferry_needed"] += 1
+                logger.info(f"[ETA-CP] stage1 booking={b.get('id')} FERRY-NEEDED "
+                            f"(driver {'island' if _on_island(dpos[0], dpos[1]) else 'mainland'}, "
+                            f"pickup opposite) -> stage 2 when built (shadow)")
+            else:
+                dist_km = _haversine_m(dpos[0], dpos[1], pin[0], pin[1]) / 1000.0
+                est_sec = int(dist_km / STAGE1_SPEED_KMH * 3600)
+                remaining_sec = int(m * 60)
+                ok = remaining_sec > STAGE1_MARGIN * est_sec
+                stage1["passed" if ok else "at_risk"] += 1
+                _write_prediction(b, win, est_sec, dist_km)
+                logger.info(f"[ETA-CP] stage1 booking={b.get('id')} "
+                            f"dist={dist_km:.1f}km est={est_sec}s "
+                            f"remaining={remaining_sec}s -> "
+                            f"{'PASS' if ok else 'AT-RISK'} (shadow)")
+
         opened, closed, closed_rows = _completion_pass()
     except Exception as e:
         logger.error(f"[ETA-CP] pass failed: {e}")
@@ -130,6 +170,7 @@ def eta_checkpoints():
     return jsonify({"ok": True, "shadow": True, "examined": examined,
                     "windows": counts, "drivers_joined": joined,
                     "early_suppressed": suppressed,
+                    "stage1": stage1,
                     "eta_rows_opened": opened, "eta_rows_closed": closed,
                     "closed_rows": closed_rows}), 200
 
@@ -137,6 +178,41 @@ def eta_checkpoints():
 # ─────────────────────────────────────────────────────────────
 # Step 2 — eta_history skeleton rows + actual_sec completion
 # ─────────────────────────────────────────────────────────────
+
+def _pickup_pin(b):
+    """(lat, lng) for the booking's pickup: payload Pickup_Lat/Lng first,
+    matcher-derived zone pin when the payload lags. None if unmatchable."""
+    try:
+        lat, lng = b.get("Pickup_Lat"), b.get("Pickup_Lng")
+        if lat is not None and lng is not None:
+            return float(lat), float(lng)
+        from pickup_matcher import match_booking
+        m = match_booking(b.get("Pickup_Location"), b.get("Dropoff_Location"))
+        if m.get("pickup_lat") is not None:
+            return m["pickup_lat"], m["pickup_lng"]
+    except Exception:
+        pass
+    return None
+
+
+def _write_prediction(b, win, est_sec, dist_km):
+    """Fill predicted_sec/distance_km into the open skeleton row for this
+    booking+window+day, first write wins. Never raises."""
+    try:
+        from db import _get_pool
+        pool = _get_pool()
+        if pool is None:
+            return
+        with pool.connection() as conn:
+            conn.execute(
+                "UPDATE eta_history SET predicted_sec = %s, distance_km = %s "
+                "WHERE booking_id = %s AND method = %s AND predicted_sec IS NULL "
+                "AND computed_at::date = (now() AT TIME ZONE 'Asia/Bangkok')::date",
+                (est_sec, round(dist_km, 2), str(b.get("id")), f"checkpoint:{win}"),
+            )
+    except Exception as e:
+        logger.warning(f"[ETA-CP] prediction write failed for {b.get('id')}: {e}")
+
 
 _opened_this_pass = 0
 
