@@ -97,15 +97,29 @@
   // Browser tabs use Zoho INTERNAL module names, not api_names —
   // verified from org metadata 11 Aug (module_name fields):
   //   Koh_Chang_Orders -> CustomModule3, Providers -> CustomModule7
+  // Contact fast path (11 Aug): tel:/wa.me under each name — the deep
+  // link stays the "full record" path, this is the call-NOW path.
+  // DEMO: fake numbers as plain text, links disabled.
+  function phoneLine(phone) {
+    if (!phone) return "";
+    if (DEMO) return `<div class="m">${phone}</div>`;
+    const digits = String(phone).replace(/[^\d+]/g, "");
+    const intl = digits.startsWith("+") ? digits.slice(1)
+               : digits.startsWith("0") ? "66" + digits.slice(1) : digits;
+    return `<div class="m"><a href="tel:+${intl}" style="color:#4da3ff;text-decoration:none">📞 ${phone}</a>` +
+           `&nbsp;·&nbsp;<a href="https://wa.me/${intl}" target="_blank" rel="noopener" style="color:#2dd4a0;text-decoration:none">💬</a></div>`;
+  }
   function customerCell(bk) {
     const nm = bk.name || "(ไม่มีชื่อ)";
-    if (DEMO || !bk.booking_id || String(bk.booking_id).startsWith("DEMO")) return nm;
-    return zlink(`${ZOHO}/CustomModule3/${bk.booking_id}`, nm);
+    const link = (DEMO || !bk.booking_id || String(bk.booking_id).startsWith("DEMO"))
+      ? nm : zlink(`${ZOHO}/CustomModule3/${bk.booking_id}`, nm);
+    return link + phoneLine(bk.customer_phone);
   }
   function driverCell(bk) {
     if (!bk.driver) return '<span class="m">ยังไม่มี ⚠</span>';
-    if (DEMO || !bk.provider_id) return bk.driver;
-    return zlink(`${ZOHO}/CustomModule7/${bk.provider_id}`, bk.driver);
+    const link = (DEMO || !bk.provider_id)
+      ? bk.driver : zlink(`${ZOHO}/CustomModule7/${bk.provider_id}`, bk.driver);
+    return link + phoneLine(bk.driver_phone);
   }
 
   function signal(bk) {

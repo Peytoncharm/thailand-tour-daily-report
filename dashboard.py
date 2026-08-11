@@ -60,6 +60,46 @@ _DEMO_ZONE_WEIGHTS = [
     ("don mueang", 1), ("mo chit bus terminal", 1),
     ("ekkamai bus terminal", 1),
 ]
+# Demo-realism (11 Aug): plain radial jitter around coastal zone centres
+# was dropping simulated drivers into the sea. Known-coastal zones get an
+# inland unit-direction (away from the water); scatter runs along it plus
+# a small along-shore wobble. No coastline data — a rough bearing per
+# zone is enough at these distances. Deterministic seed unchanged.
+_DEMO_INLAND_BIAS = {
+    # Koh Chang west-coast beaches: sea to the west -> inland = east
+    "white sand beach": (0.0, 1.0),
+    "klong prao": (0.0, 1.0),
+    "kai bae": (0.0, 1.0),
+    "lonely beach": (0.0, 1.0),
+    "bailan beach": (0.3, 1.0),
+    "klong son": (-0.3, 1.0),        # bay opens north-west -> inland = SE
+    "bang bao pier": (1.0, 0.3),     # south coast -> inland = north
+    "salak phet": (1.0, -0.3),       # south-east bay -> inland = NW
+    "ao sapparot pier": (-1.0, 0.2), # north-tip pier -> inland = south
+    # mainland coast: sea to the south/south-west
+    "ao thammachat pier": (0.7, 0.7),
+    "laem ngop pier": (0.7, 0.7),
+    "laem sok pier": (0.7, 0.7),
+    "ban phe pier": (1.0, 0.0),
+    "pattaya": (0.0, 1.0),           # sea west -> inland = east
+}
+
+def _demo_scatter(rng, zone, p, along_max, perp_max):
+    """One scatter position near a zone centre. Coastal zones scatter
+    only inland (plus along-shore wobble); inland zones keep the old
+    symmetric jitter at the same scale."""
+    bias = _DEMO_INLAND_BIAS.get(zone)
+    if not bias:
+        return (p["lat"] + rng.uniform(-along_max, along_max),
+                p["lng"] + rng.uniform(-along_max, along_max))
+    blat, blng = bias
+    n = (blat * blat + blng * blng) ** 0.5
+    blat, blng = blat / n, blng / n
+    along = rng.uniform(0.15 * along_max, along_max)   # strictly inland
+    perp = rng.uniform(-perp_max, perp_max)            # along-shore wobble
+    return (p["lat"] + blat * along - blng * perp,
+            p["lng"] + blng * along + blat * perp)
+
 _DEMO_NAMES = ["Anna K", "Grzegorz W", "Tom H", "Lena M", "Marco P",
                "Sophie B", "James T", "Nina R", "Oliver S", "Emma L",
                "Lukas F", "Marie C", "David N", "Julia W", "Chris O",
@@ -82,8 +122,7 @@ def _demo_payload():
     for i in range(n_drivers):
         z = zone_pool[rng.randrange(len(zone_pool))]
         p = pts[z]
-        lat = p["lat"] + rng.uniform(-0.012, 0.012)
-        lng = p["lng"] + rng.uniform(-0.012, 0.012)
+        lat, lng = _demo_scatter(rng, z, p, 0.010, 0.005)
         r = rng.random()
         if r < 0.60:
             age = rng.randint(20, 280)
@@ -100,6 +139,9 @@ def _demo_payload():
             "age_s": age,
             "last_seen_ict": None if age is None else
                 datetime.now(ICT).strftime("%H:%M:%S"),
+            # Obviously fake number; the templates also disable all
+            # tel:/wa.me links in DEMO mode.
+            "phone": f"08x-xxx-{1000 + i:04d}",
         })
 
     bookings = []
@@ -114,18 +156,22 @@ def _demo_payload():
         typ = rng.choice(["Private Transfer"] * 5 + ["Join Transfer"] * 2
                          + ["Activity Tour"] * 3)
         dz = zone_pool[rng.randrange(len(zone_pool))]
+        drv = None if rng.random() < 0.15 else f"D-{rng.randint(1, n_drivers):02d}"
+        blat, blng = _demo_scatter(rng, z, p, 0.005, 0.003)
         bookings.append({
             "booking_id": f"DEMO-{i+1:03d}",
             "name": _DEMO_NAMES[i % len(_DEMO_NAMES)],
             "tour_date": day.strftime("%Y-%m-%d"),
             "pickup_time": f"{hh:02d}:{rng.choice(['00','15','30','45'])}",
             "status": status, "type": typ,
-            "lat": round(p["lat"] + rng.uniform(-0.006, 0.006), 6),
-            "lng": round(p["lng"] + rng.uniform(-0.006, 0.006), 6),
+            "lat": round(blat, 6),
+            "lng": round(blng, 6),
             "precision": p["precision"],
-            "driver": None if rng.random() < 0.15 else f"D-{rng.randint(1, n_drivers):02d}",
+            "driver": drv,
             "pickup_location": z.title(),
             "dropoff_location": dz.title(),
+            "customer_phone": f"08x-xxx-{2000 + i:04d}",
+            "driver_phone": None if drv is None else f"08x-xxx-{3000 + i:04d}",
         })
     # honest no-coords entries
     for i, txt in enumerate(["Sunset Villa (address unclear)",
@@ -174,13 +220,23 @@ def _bookings_today_tomorrow():
                 "SELECT booking_id, tour_date, pickup_ts, status, "
                 "type_of_package, pickup_lat, pickup_lng, geocode_precision, "
                 "driver_id, provider_id, payload->>'Name', payload->>'Last_Name', "
-                "payload->>'Pickup_Location', payload->>'Dropoff_Location' "
+                "payload->>'Pickup_Location', payload->>'Dropoff_Location', "
+                "payload->>'Phone_WhatsApp', payload->>'Phone' "
                 "FROM booking_cache WHERE tour_date = ANY(%s) "
                 "ORDER BY pickup_ts NULLS LAST LIMIT 300",
                 (days,),
             ).fetchall()
         for (bid, tour_date, pickup_ts, status, pkg, lat, lng, prec,
-             driver_id, provider_id, name, last_name, pickup_loc, dropoff_loc) in rows:
+             driver_id, provider_id, name, last_name, pickup_loc, dropoff_loc,
+             ph_wa, ph) in rows:
+            drv_phone = None
+            if provider_id:
+                try:
+                    from gps_ingest import provider_entry_for_id
+                    e = provider_entry_for_id(provider_id)
+                    drv_phone = (e or {}).get("phone") or None
+                except Exception:
+                    pass
             pickup_time = ""
             try:
                 if pickup_ts:
@@ -200,6 +256,8 @@ def _bookings_today_tomorrow():
                 "pickup_location": (pickup_loc or "").strip()[:60],
                 "dropoff_location": (dropoff_loc or "").strip()[:60],
                 "provider_id": provider_id,
+                "customer_phone": ((ph_wa or ph) or "").strip() or None,
+                "driver_phone": drv_phone,
             })
     except Exception as e:
         logger.error(f"[DASHBOARD] bookings query error: {e}")
@@ -231,12 +289,14 @@ def team_dashboard_data():
                 "SELECT driver_id, ts, lat, lng, speed, batt, updated_at "
                 "FROM driver_latest ORDER BY updated_at DESC LIMIT 500"
             ).fetchall()
-        # Display names from the in-memory registry (no Zoho reads)
-        names = {}
+        # Display names + phones from the in-memory registry (no Zoho reads)
+        names, phones = {}, {}
         try:
             from gps_ingest import _refresh_providers, _provider_cache
             _refresh_providers()
-            names = {c: e.get("name", "") for c, e in _provider_cache["by_code"].items()}
+            for c, e in _provider_cache["by_code"].items():
+                names[c] = e.get("name", "")
+                phones[c] = e.get("phone", "") or None
         except Exception:
             pass
         now = datetime.now(timezone.utc)
@@ -249,6 +309,7 @@ def team_dashboard_data():
             drivers.append({
                 "code": driver_id,
                 "name": names.get(driver_id, ""),
+                "phone": phones.get(driver_id),
                 "lat": lat, "lng": lng,
                 "speed": speed, "batt": batt,
                 "age_s": age_s,

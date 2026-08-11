@@ -94,6 +94,20 @@
 <script>
   const KEY = {{ key|tojson }};
   const DEMO = {{ 'true' if demo else 'false' }};
+
+  // Contact fast path (11 Aug): the incident moment is "driver silent,
+  // customer landing, call NOW" — tap-to-call beats any deep link.
+  // Numbers come from the cached payload / provider registry (read-only).
+  // DEMO: fake numbers render as plain text, links disabled.
+  function contactHtml(label, phone) {
+    if (!phone) return "";
+    if (DEMO) return `<br>${label}: ${phone}`;
+    const digits = String(phone).replace(/[^\d+]/g, "");
+    const intl = digits.startsWith("+") ? digits.slice(1)
+               : digits.startsWith("0") ? "66" + digits.slice(1) : digits;
+    return `<br>${label}: <a href="tel:+${intl}" style="color:#4da3ff;text-decoration:none">📞 ${phone}</a>` +
+           `&nbsp;·&nbsp;<a href="https://wa.me/${intl}" target="_blank" rel="noopener" style="color:#2dd4a0;text-decoration:none">💬 WhatsApp</a>`;
+  }
   const REFRESH_MS = 30000;
 
   // East region: Koh Chang / Trat with the mainland corridor in view
@@ -156,7 +170,7 @@
         const html = `<div class="pop"><b>${drv.name || drv.code}</b>
           <div class="m">รหัส: ${drv.code}<br>
           เห็นล่าสุด: ${drv.last_seen_ict || "-"} (${ageLabel(drv.age_s)})<br>
-          แบตเตอรี่: ${drv.batt != null ? drv.batt + "%" : "-"}</div></div>`;
+          แบตเตอรี่: ${drv.batt != null ? drv.batt + "%" : "-"}${contactHtml("โทร", drv.phone)}</div></div>`;
         if (markers.has(drv.code)) {
           const m = markers.get(drv.code);
           m.setLatLng([drv.lat, drv.lng]);
@@ -195,6 +209,7 @@
           ${bk.tour_date || ""} ⏰ ${bk.pickup_time || "-"}<br>
           รับที่: ${bk.pickup_location || "-"}<br>
           คนขับ: ${bk.driver || "ยังไม่มี"} · พิกัด: ${bk.precision || "-"}
+          ${contactHtml("ลูกค้า", bk.customer_phone)}${contactHtml("คนขับ", bk.driver_phone)}
           ${isPartner ? '<br>🤝 partner-operated — no GPS expected' : ''}</div></div>`;
         if (bmarkers.has(bk.booking_id)) {
           const m = bmarkers.get(bk.booking_id);
