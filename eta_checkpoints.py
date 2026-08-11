@@ -61,6 +61,7 @@ def eta_checkpoints():
     joined = 0
     examined = 0
     stage1 = {"passed": 0, "at_risk": 0, "ferry_needed": 0, "no_gps": 0, "no_pin": 0}
+    alerts = {"no_signal": 0, "wrong_direction": 0, "deduped": 0}
     try:
         from booking_cache import get_bookings_for_dates
         from db import _get_pool
@@ -141,6 +142,7 @@ def eta_checkpoints():
 
             # ── Step 3: stage-1 free filter (SHADOW — log + ledger only) ──
             pin = _pickup_pin(b)
+            dist_km = None
             if pin is None:
                 stage1["no_pin"] += 1
             elif dpos is None or age_s is None or age_s > STALE_S:
@@ -162,15 +164,35 @@ def eta_checkpoints():
                             f"remaining={remaining_sec}s -> "
                             f"{'PASS' if ok else 'AT-RISK'} (shadow)")
 
+            # ── Step 7 (free half): alert rules 1 + 4, shadow rows only.
+            #    Early-suppressed bookings are NOT evaluated (10 Aug
+            #    morning decision: silence before T-90). ──
+            if not sup:
+                try:
+                    from alert_engine import shadow_evaluate
+                    res = shadow_evaluate(b, win, drv_code, age_s, dpos, pin, dist_km)
+                    for k in alerts:
+                        alerts[k] += res.get(k, 0)
+                except Exception as e:
+                    logger.warning(f"[ETA-CP] alert shadow failed: {e}")
+
         opened, closed, closed_rows = _completion_pass()
     except Exception as e:
         logger.error(f"[ETA-CP] pass failed: {e}")
         return jsonify({"ok": False, "reason": str(e)[:200]}), 500
 
+    budget_used = None
+    try:
+        from alert_engine import shadow_budget_today
+        budget_used = shadow_budget_today()
+    except Exception:
+        pass
     return jsonify({"ok": True, "shadow": True, "examined": examined,
                     "windows": counts, "drivers_joined": joined,
                     "early_suppressed": suppressed,
                     "stage1": stage1,
+                    "alerts_shadow": alerts,
+                    "alert_budget_used_today": budget_used,
                     "eta_rows_opened": opened, "eta_rows_closed": closed,
                     "closed_rows": closed_rows}), 200
 
