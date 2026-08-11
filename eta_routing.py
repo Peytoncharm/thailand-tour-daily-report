@@ -112,10 +112,12 @@ def _correction(conn, route_key):
     return round(median(ratios), 3) if len(ratios) >= 5 else 1.0
 
 
-def run_stage2(b, win, dpos, pin, remaining_sec, route_key, drv_code, counters):
+def run_stage2(b, win, dpos, pin, remaining_sec, route_key, drv_code, counters,
+               rows_out=None):
     """Stage-2 check for one at-risk/ferry-needed booking. Writes ONE new
-    eta_history row (method 'road' or 'road+ferry'); returns nothing the
-    caller must act on — shadow. Never raises."""
+    eta_history row (method 'road' or 'road+ferry'); appends row detail
+    to rows_out (cap 5) for the cron JSON — the gate evidence. Shadow.
+    Never raises."""
     try:
         from db import _get_pool
         from ferry_model import load_model, _pier_pins
@@ -163,6 +165,15 @@ def run_stage2(b, win, dpos, pin, remaining_sec, route_key, drv_code, counters):
                  corrected, method))
             counters[method.replace("+", "_")] += 1
             at_risk = remaining_sec < corrected + 600  # 10-min buffer [spec]
+            if rows_out is not None and len(rows_out) < 5:
+                rows_out.append({
+                    "booking_id": str(b.get("id")), "window": win,
+                    "method": method, "route_key": route_key,
+                    "distance_km": km, "raw_sec": sec,
+                    "correction": corr, "predicted_sec": corrected,
+                    "remaining_sec": remaining_sec,
+                    "verdict": "AT-RISK" if at_risk else "ok",
+                })
             logger.info(f"[STAGE2] booking={b.get('id')} window={win} "
                         f"method={method} raw={sec}s corr×{corr}={corrected}s "
                         f"remaining={remaining_sec}s -> "

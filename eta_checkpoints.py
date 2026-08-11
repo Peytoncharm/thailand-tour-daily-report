@@ -63,6 +63,7 @@ def eta_checkpoints():
     stage1 = {"passed": 0, "at_risk": 0, "ferry_needed": 0, "no_gps": 0, "no_pin": 0}
     stage2 = {"road": 0, "road_ferry": 0, "skipped_no_key": 0,
               "provider_error": 0, "capped": 0}
+    stage2_rows = []
     alerts = {"no_signal": 0, "wrong_direction": 0, "deduped": 0}
     try:
         from booking_cache import get_bookings_for_dates
@@ -154,7 +155,8 @@ def eta_checkpoints():
                 logger.info(f"[ETA-CP] stage1 booking={b.get('id')} FERRY-NEEDED "
                             f"(driver {'island' if _on_island(dpos[0], dpos[1]) else 'mainland'}, "
                             f"pickup opposite) -> stage 2 (shadow)")
-                _try_stage2(b, win, dpos, pin, int(m * 60), drv_code, stage2)
+                _try_stage2(b, win, dpos, pin, int(m * 60), drv_code,
+                            stage2, stage2_rows)
             else:
                 dist_km = _haversine_m(dpos[0], dpos[1], pin[0], pin[1]) / 1000.0
                 est_sec = int(dist_km / STAGE1_SPEED_KMH * 3600)
@@ -167,7 +169,8 @@ def eta_checkpoints():
                             f"remaining={remaining_sec}s -> "
                             f"{'PASS' if ok else 'AT-RISK'} (shadow)")
                 if not ok:
-                    _try_stage2(b, win, dpos, pin, remaining_sec, drv_code, stage2)
+                    _try_stage2(b, win, dpos, pin, remaining_sec, drv_code,
+                                stage2, stage2_rows)
 
             # ── Step 7 (free half): alert rules 1 + 4, shadow rows only.
             #    Early-suppressed bookings are NOT evaluated (10 Aug
@@ -197,6 +200,7 @@ def eta_checkpoints():
                     "early_suppressed": suppressed,
                     "stage1": stage1,
                     "stage2": stage2,
+                    "stage2_rows": stage2_rows,
                     "alerts_shadow": alerts,
                     "alert_budget_used_today": budget_used,
                     "eta_rows_opened": opened, "eta_rows_closed": closed,
@@ -217,13 +221,14 @@ def _route_key_for(b):
     return rk
 
 
-def _try_stage2(b, win, dpos, pin, remaining_sec, drv_code, counters):
+def _try_stage2(b, win, dpos, pin, remaining_sec, drv_code, counters,
+                rows_out=None):
     """Step 4: hand an at-risk/ferry-needed booking to the paid routing
     check. Clean skip (counted) while no provider key exists. Never raises."""
     try:
         from eta_routing import run_stage2
         run_stage2(b, win, dpos, pin, remaining_sec,
-                   _route_key_for(b), drv_code, counters)
+                   _route_key_for(b), drv_code, counters, rows_out)
     except Exception as e:
         logger.warning(f"[ETA-CP] stage2 hand-off failed: {e}")
 
