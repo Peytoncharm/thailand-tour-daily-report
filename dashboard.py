@@ -173,14 +173,14 @@ def _bookings_today_tomorrow():
             rows = conn.execute(
                 "SELECT booking_id, tour_date, pickup_ts, status, "
                 "type_of_package, pickup_lat, pickup_lng, geocode_precision, "
-                "driver_id, payload->>'Name', payload->>'Last_Name', "
+                "driver_id, provider_id, payload->>'Name', payload->>'Last_Name', "
                 "payload->>'Pickup_Location', payload->>'Dropoff_Location' "
                 "FROM booking_cache WHERE tour_date = ANY(%s) "
                 "ORDER BY pickup_ts NULLS LAST LIMIT 300",
                 (days,),
             ).fetchall()
         for (bid, tour_date, pickup_ts, status, pkg, lat, lng, prec,
-             driver_id, name, last_name, pickup_loc, dropoff_loc) in rows:
+             driver_id, provider_id, name, last_name, pickup_loc, dropoff_loc) in rows:
             pickup_time = ""
             try:
                 if pickup_ts:
@@ -199,6 +199,7 @@ def _bookings_today_tomorrow():
                 "driver": driver_id,
                 "pickup_location": (pickup_loc or "").strip()[:60],
                 "dropoff_location": (dropoff_loc or "").strip()[:60],
+                "provider_id": provider_id,
             })
     except Exception as e:
         logger.error(f"[DASHBOARD] bookings query error: {e}")

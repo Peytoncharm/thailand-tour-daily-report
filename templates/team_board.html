@@ -87,6 +87,24 @@
   let bookings = [], driverAge = {}, thresholds = {green_s:300, amber_s:1200};
   let sortKey = "pickup", sortAsc = true;
 
+  // Zoho deep links (live records only — demo rows stay plain text:
+  // a dead link is more honest than a broken one)
+  const ZOHO = "https://crm.zoho.eu/crm/org20081593579/tab";
+  function zlink(url, text) {
+    return `<a href="${url}" target="_blank" rel="noopener"
+      style="color:inherit;text-decoration:underline dotted #4da3ff;text-underline-offset:3px">${text}</a>`;
+  }
+  function customerCell(bk) {
+    const nm = bk.name || "(ไม่มีชื่อ)";
+    if (DEMO || !bk.booking_id || String(bk.booking_id).startsWith("DEMO")) return nm;
+    return zlink(`${ZOHO}/Koh_Chang_Orders/${bk.booking_id}`, nm);
+  }
+  function driverCell(bk) {
+    if (!bk.driver) return '<span class="m">ยังไม่มี ⚠</span>';
+    if (DEMO || !bk.provider_id) return bk.driver;
+    return zlink(`${ZOHO}/Providers/${bk.provider_id}`, bk.driver);
+  }
+
   function signal(bk) {
     if (!bk.driver) return {c:"var(--grey)", label:"ไม่มีคนขับ", rank:3};
     if (!(bk.driver in driverAge)) return {c:"var(--grey)", label:"ไม่เคยส่งสัญญาณ", rank:2};
@@ -124,12 +142,12 @@
       return `<tr class="${attention(bk)?'attn':''}">
         <td data-l="เวลารับ"><b>${bk.pickup_time||"–"}</b>
           <div class="m">${bk.tour_date||""}</div></td>
-        <td data-l="ลูกค้า">${bk.name||"(ไม่มีชื่อ)"}</td>
+        <td data-l="ลูกค้า">${customerCell(bk)}</td>
         <td data-l="เส้นทาง">${bk.pickup_location||"–"} → ${bk.dropoff_location||"–"}
           ${noCoords ? '<div class="m">⚠ ไม่มีพิกัด</div>' : ''}</td>
         <td data-l="ประเภท">${bk.type||"–"}</td>
         <td data-l="สถานะ"><span class="pill ${ (bk.status||'').toLowerCase()==='confirmed'?'ok':'' }">${bk.status||"ไม่มีสถานะ"}</span></td>
-        <td data-l="คนขับ">${bk.driver||'<span class="m">ยังไม่มี ⚠</span>'}</td>
+        <td data-l="คนขับ">${driverCell(bk)}</td>
         <td data-l="สัญญาณ"><span class="dot" style="background:${s.c}"></span>
           <span class="m">${s.label}</span></td>
       </tr>`;
