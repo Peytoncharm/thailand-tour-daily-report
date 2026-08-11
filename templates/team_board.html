@@ -34,6 +34,15 @@
   td { padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
   tr.attn { background:rgba(240,96,96,.08); }
   tr.attn td:first-child { border-left:3px solid var(--red); }
+  /* Lifecycle (11 Aug): missed = pickup passed, no detected arrival —
+     loudest row on the board; done rows collapse into เสร็จแล้ว */
+  tr.missed { background:rgba(240,96,96,.18); }
+  tr.missed td:first-child { border-left:3px solid var(--red); }
+  tr.done td { opacity:.5; }
+  #donebox { margin-top:16px; }
+  #donebox summary { cursor:pointer; color:var(--muted); font-size:13px;
+    padding:8px 10px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:10px; user-select:none; }
   .m { color:var(--muted); font-size:11px; }
   .pill { border:1px solid var(--line); border-radius:8px; padding:1px 8px;
     font-size:11px; color:var(--muted); white-space:nowrap; }
@@ -88,6 +97,10 @@
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
+  <details id="donebox" style="display:none">
+    <summary id="donesum">✓ เสร็จแล้ว</summary>
+    <table><tbody id="donerows"></tbody></table>
+  </details>
 </main>
 <script>
   const KEY = {{ key|tojson }};
@@ -165,7 +178,17 @@
     if (a < thresholds.amber_s) return {c:"var(--amber)", label:Math.round(a/60)+" นาที", rank:1};
     return {c:"var(--red)", label:Math.round(a/60)+" นาทีแล้ว", rank:2};
   }
+  // Lifecycle (11 Aug): arrival re-uses the Step-2 completion detection.
+  // Partner-operated jobs never alarm (no GPS expected) — past pickup
+  // they simply count as done.
+  function isPartnerB(bk) { return (bk.type || "").toLowerCase() !== "private transfer"; }
+  function lifecycle(bk) {
+    if (bk.arrived || (isPartnerB(bk) && bk.pickup_passed)) return "done";
+    if (bk.pickup_passed && !bk.arrived && !isPartnerB(bk)) return "missed";
+    return "open";
+  }
   function attention(bk) {
+    if (lifecycle(bk) === "missed") return true;
     const s = signal(bk);
     return !bk.driver || s.c === "var(--red)" || bk.lat == null;
   }
@@ -179,42 +202,61 @@
       default:       return "";
     }
   }
+  function rowHtml(bk) {
+    const s = signal(bk);
+    const noCoords = bk.lat == null;
+    const lc = lifecycle(bk);
+    const cls = lc === "done" ? "done" : lc === "missed" ? "attn missed"
+              : attention(bk) ? "attn" : "";
+    const missedTag = lc === "missed"
+      ? '<div class="m" style="color:var(--red);font-weight:600">⚠ อาจพลาดลูกค้า</div>' : '';
+    const doneTag = lc === "done" ? ' <span class="m">✓</span>' : '';
+    return `<tr class="${cls}">
+      <td data-l="เวลารับ"><b>${bk.pickup_time||"–"}</b>${doneTag}
+        <div class="m">${bk.tour_date||""}</div>${missedTag}</td>
+      <td data-l="ลูกค้า">${customerCell(bk)}</td>
+      <td data-l="เส้นทาง">${bk.pickup_location||"–"} → ${bk.dropoff_location||"–"}
+        ${noCoords ? '<div class="m">⚠ ไม่มีพิกัด</div>' : ''}</td>
+      <td data-l="ประเภท">${bk.type||"–"}</td>
+      <td data-l="สถานะ"><span class="pill ${ (bk.status||'').toLowerCase()==='confirmed'?'ok':'' }">${bk.status||"ไม่มีสถานะ"}</span></td>
+      <td data-l="คนขับ">${driverCell(bk)}</td>
+      <td data-l="สัญญาณ"><span class="dot" style="background:${s.c}"></span>
+        <span class="m">${s.label}</span></td>
+    </tr>`;
+  }
+
   function render() {
     const rows = document.getElementById("rows");
     const view = bookings.filter(buMatch);   // BU tab scope — rows AND summaries
-    const list = [...view].sort((a,b) => {
-      const at = attention(a)?0:1, bt = attention(b)?0:1;
-      if (at !== bt) return at-bt;                       // attention first
+    const doneL = view.filter(bk => lifecycle(bk) === "done");
+    const openL = view.filter(bk => lifecycle(bk) !== "done");
+    const list = [...openL].sort((a,b) => {
+      // missed first (loudest), then other attention, then the sort key
+      const ar = lifecycle(a)==="missed"?0:attention(a)?1:2;
+      const br = lifecycle(b)==="missed"?0:attention(b)?1:2;
+      if (ar !== br) return ar-br;
       const va = sortVal(a), vb = sortVal(b);
       return (va<vb?-1:va>vb?1:0) * (sortAsc?1:-1);
     });
-    rows.innerHTML = list.map(bk => {
-      const s = signal(bk);
-      const noCoords = bk.lat == null;
-      return `<tr class="${attention(bk)?'attn':''}">
-        <td data-l="เวลารับ"><b>${bk.pickup_time||"–"}</b>
-          <div class="m">${bk.tour_date||""}</div></td>
-        <td data-l="ลูกค้า">${customerCell(bk)}</td>
-        <td data-l="เส้นทาง">${bk.pickup_location||"–"} → ${bk.dropoff_location||"–"}
-          ${noCoords ? '<div class="m">⚠ ไม่มีพิกัด</div>' : ''}</td>
-        <td data-l="ประเภท">${bk.type||"–"}</td>
-        <td data-l="สถานะ"><span class="pill ${ (bk.status||'').toLowerCase()==='confirmed'?'ok':'' }">${bk.status||"ไม่มีสถานะ"}</span></td>
-        <td data-l="คนขับ">${driverCell(bk)}</td>
-        <td data-l="สัญญาณ"><span class="dot" style="background:${s.c}"></span>
-          <span class="m">${s.label}</span></td>
-      </tr>`;
-    }).join("");
-    const n = view.length;
-    const attn = view.filter(attention).length;
-    const noC = view.filter(b => b.lat == null).length;
-    const noD = view.filter(b => !b.driver).length;
+    rows.innerHTML = list.map(rowHtml).join("");
+    const box = document.getElementById("donebox");
+    box.style.display = doneL.length ? "block" : "none";
+    document.getElementById("donesum").textContent = `✓ เสร็จแล้ว (${doneL.length})`;
+    document.getElementById("donerows").innerHTML = doneL.map(rowHtml).join("");
+    const n = openL.length;
+    const attn = openL.filter(attention).length;
+    const missed = openL.filter(b => lifecycle(b) === "missed").length;
+    const noC = openL.filter(b => b.lat == null).length;
+    const noD = openL.filter(b => !b.driver).length;
     const label = BU === "all" ? "" : BU === "tour" ? " (Tour)" : " (Transfer)";
-    document.getElementById("count").textContent = n + " งานวันนี้/พรุ่งนี้" + label;
+    document.getElementById("count").textContent = n + " งานเปิดอยู่" + label;
     document.getElementById("summary").innerHTML =
-      `<div class="sumbox"><b>${n}</b>งานทั้งหมด</div>` +
+      `<div class="sumbox"><b>${n}</b>งานเปิดอยู่</div>` +
+      (missed ? `<div class="sumbox"><b style="color:var(--red)">${missed}</b>อาจพลาดลูกค้า ⚠</div>` : '') +
       `<div class="sumbox"><b style="color:var(--red)">${attn}</b>ต้องดู ⚠</div>` +
       `<div class="sumbox"><b>${noD}</b>ยังไม่มีคนขับ</div>` +
-      `<div class="sumbox"><b>${noC}</b>ไม่มีพิกัด</div>`;
+      `<div class="sumbox"><b>${noC}</b>ไม่มีพิกัด</div>` +
+      `<div class="sumbox"><b>${doneL.length}</b>เสร็จแล้ว ✓</div>`;
   }
   document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
     const k = th.dataset.k;

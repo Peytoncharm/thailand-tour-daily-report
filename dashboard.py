@@ -169,6 +169,10 @@ def _demo_payload():
         dz = zone_pool[rng.randrange(len(zone_pool))]
         drv = None if rng.random() < 0.15 else f"D-{rng.randint(1, n_drivers):02d}"
         blat, blng = _demo_scatter(rng, z, p, 0.005, 0.003)
+        # Demo lifecycle: past-pickup rows mostly arrived, a couple left
+        # un-arrived so the "possibly missed" styling is demonstrable
+        past = (day.date() == now.date()) and (hh < now.hour)
+        arrived = past and rng.random() < 0.7
         bookings.append({
             "booking_id": f"DEMO-{i+1:03d}",
             "name": _DEMO_NAMES[i % len(_DEMO_NAMES)],
@@ -183,6 +187,8 @@ def _demo_payload():
             "dropoff_location": dz.title(),
             "customer_phone": f"08x-xxx-{2000 + i:04d}",
             "driver_phone": None if drv is None else f"08x-xxx-{3000 + i:04d}",
+            "arrived": arrived,
+            "pickup_passed": past,
         })
     # honest no-coords entries
     for i, txt in enumerate(["Sunset Villa (address unclear)",
@@ -237,6 +243,13 @@ def _bookings_today_tomorrow():
                 "ORDER BY pickup_ts NULLS LAST LIMIT 300",
                 (days,),
             ).fetchall()
+            # Lifecycle (11 Aug): a booking is "arrived" when the Step-2
+            # completion pass closed a checkpoint row for it (GPS within
+            # 300 m of the pickup pin) — the same detection, re-used.
+            arrived_ids = {r[0] for r in conn.execute(
+                "SELECT DISTINCT booking_id FROM eta_history "
+                "WHERE actual_sec IS NOT NULL AND method LIKE 'checkpoint:%%' "
+                "AND computed_at > now() - interval '48 hours'").fetchall()}
         for (bid, tour_date, pickup_ts, status, pkg, lat, lng, prec,
              driver_id, provider_id, name, last_name, pickup_loc, dropoff_loc,
              ph_wa, ph) in rows:
@@ -269,6 +282,12 @@ def _bookings_today_tomorrow():
                 "provider_id": provider_id,
                 "customer_phone": ((ph_wa or ph) or "").strip() or None,
                 "driver_phone": drv_phone,
+                "arrived": bid in arrived_ids,
+                # 10-min grace: an on-time pickup in progress must not
+                # alarm; only past pickup_ts + grace counts as "passed"
+                "pickup_passed": bool(
+                    pickup_ts and
+                    (datetime.now(timezone.utc) - pickup_ts).total_seconds() > 600),
             })
     except Exception as e:
         logger.error(f"[DASHBOARD] bookings query error: {e}")
