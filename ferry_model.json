@@ -1,0 +1,11 @@
+{
+  "_comment": "EDITABLE DATA, not code (spec Step 5 / P-A). Reloaded on every pass - edits need a push but no code change. D-P1 sailing values are Orathai's own (10 Aug), NOT yet verified against the operator schedule - check before the P-A gate closes. Queue baselines are placeholders until the queue-learning loop reports observed values.",
+  "pier_mainland": "ao thammachat pier",
+  "pier_island": "ao sapparot pier",
+  "sailings": { "first": "06:30", "last": "18:30", "interval_min": 45 },
+  "positioning_deadline": "17:45",
+  "crossing_min": 30,
+  "queue_min_baseline": { "default": 15, "high_season": 40, "weekend_peak": 60 },
+  "island_cutoff": "09:00",
+  "mainland_cutoff": "07:00"
+}

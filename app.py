@@ -56,6 +56,9 @@ app.register_blueprint(eta_bp)
 from eta_policy import eta_policy_bp
 app.register_blueprint(eta_policy_bp)
 
+from ferry_model import ferry_bp
+app.register_blueprint(ferry_bp)
+
 # --- Readiness gate (Task 1, 9 Aug): Render used port-open to decide
 # "live", so the first requests after a deploy paid Zoho-token + provider-
 # registry + DB-pool cold costs and cron cycles timed out (17:33 sweep,
