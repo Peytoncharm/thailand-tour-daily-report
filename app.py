@@ -62,6 +62,9 @@ app.register_blueprint(ferry_bp)
 from alert_engine import alert_bp
 app.register_blueprint(alert_bp)
 
+from positioning_check import positioning_bp
+app.register_blueprint(positioning_bp)
+
 # --- Readiness gate (Task 1, 9 Aug): Render used port-open to decide
 # "live", so the first requests after a deploy paid Zoho-token + provider-
 # registry + DB-pool cold costs and cron cycles timed out (17:33 sweep,
