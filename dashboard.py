@@ -113,6 +113,7 @@ def _demo_payload():
         status = rng.choice(["Confirmed"] * 7 + ["", "Pending", ""])
         typ = rng.choice(["Private Transfer"] * 5 + ["Join Transfer"] * 2
                          + ["Activity Tour"] * 3)
+        dz = zone_pool[rng.randrange(len(zone_pool))]
         bookings.append({
             "booking_id": f"DEMO-{i+1:03d}",
             "name": _DEMO_NAMES[i % len(_DEMO_NAMES)],
@@ -121,8 +122,10 @@ def _demo_payload():
             "status": status, "type": typ,
             "lat": round(p["lat"] + rng.uniform(-0.006, 0.006), 6),
             "lng": round(p["lng"] + rng.uniform(-0.006, 0.006), 6),
-            "precision": p["precision"], "driver": f"D-{rng.randint(1, n_drivers):02d}",
+            "precision": p["precision"],
+            "driver": None if rng.random() < 0.15 else f"D-{rng.randint(1, n_drivers):02d}",
             "pickup_location": z.title(),
+            "dropoff_location": dz.title(),
         })
     # honest no-coords entries
     for i, txt in enumerate(["Sunset Villa (address unclear)",
@@ -135,6 +138,7 @@ def _demo_payload():
             "status": "Confirmed", "type": "Private Transfer",
             "lat": None, "lng": None, "precision": None,
             "driver": None, "pickup_location": txt,
+            "dropoff_location": "Suvarnabhumi",
         })
 
     return {"ok": True, "demo": True, "drivers": drivers,
@@ -170,13 +174,13 @@ def _bookings_today_tomorrow():
                 "SELECT booking_id, tour_date, pickup_ts, status, "
                 "type_of_package, pickup_lat, pickup_lng, geocode_precision, "
                 "driver_id, payload->>'Name', payload->>'Last_Name', "
-                "payload->>'Pickup_Location' "
+                "payload->>'Pickup_Location', payload->>'Dropoff_Location' "
                 "FROM booking_cache WHERE tour_date = ANY(%s) "
                 "ORDER BY pickup_ts NULLS LAST LIMIT 300",
                 (days,),
             ).fetchall()
         for (bid, tour_date, pickup_ts, status, pkg, lat, lng, prec,
-             driver_id, name, last_name, pickup_loc) in rows:
+             driver_id, name, last_name, pickup_loc, dropoff_loc) in rows:
             pickup_time = ""
             try:
                 if pickup_ts:
@@ -194,10 +198,22 @@ def _bookings_today_tomorrow():
                 "precision": prec,
                 "driver": driver_id,
                 "pickup_location": (pickup_loc or "").strip()[:60],
+                "dropoff_location": (dropoff_loc or "").strip()[:60],
             })
     except Exception as e:
         logger.error(f"[DASHBOARD] bookings query error: {e}")
     return out
+
+
+@dashboard_bp.route("/team/board", methods=["GET"])
+def team_board():
+    """List-view companion: the map answers 'where', this answers 'what
+    and how many'. Same key gate, same data endpoint, demo=1 supported."""
+    if not _check_key():
+        return jsonify({"error": "unauthorized"}), 401
+    return render_template("team_board.html",
+                           key=request.args.get("key", ""),
+                           demo=(request.args.get("demo") == "1"))
 
 
 @dashboard_bp.route("/team/dashboard/data", methods=["GET"])
