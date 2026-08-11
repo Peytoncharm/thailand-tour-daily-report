@@ -122,7 +122,7 @@ def eta_checkpoints():
             # closes with actual_sec.
             _open_skeleton_row(b, win, drv_code)
 
-        opened, closed = _completion_pass()
+        opened, closed, closed_rows = _completion_pass()
     except Exception as e:
         logger.error(f"[ETA-CP] pass failed: {e}")
         return jsonify({"ok": False, "reason": str(e)[:200]}), 500
@@ -130,7 +130,8 @@ def eta_checkpoints():
     return jsonify({"ok": True, "shadow": True, "examined": examined,
                     "windows": counts, "drivers_joined": joined,
                     "early_suppressed": suppressed,
-                    "eta_rows_opened": opened, "eta_rows_closed": closed}), 200
+                    "eta_rows_opened": opened, "eta_rows_closed": closed,
+                    "closed_rows": closed_rows}), 200
 
 
 # ─────────────────────────────────────────────────────────────
@@ -184,11 +185,13 @@ def _completion_pass():
     global _opened_this_pass
     opened, _opened_this_pass = _opened_this_pass, 0
     closed = 0
+    closed_rows = []   # full row details for the response JSON (cap 5) —
+                       # the learning-loop data point itself, not just a counter
     try:
         from db import _get_pool
         pool = _get_pool()
         if pool is None:
-            return opened, 0
+            return opened, 0, closed_rows
         with pool.connection() as conn:
             open_rows = conn.execute(
                 "SELECT h.id, h.booking_id, h.driver_id, h.computed_at, "
@@ -221,6 +224,18 @@ def _completion_pass():
                 closed += 1
                 logger.info(f"[ETA-CP] closed row {hid} booking={bid} "
                             f"actual={actual}s on_time={on_time}")
+                if len(closed_rows) < 5:
+                    row = conn.execute(
+                        "SELECT id, booking_id, driver_id, route_key, method, "
+                        "computed_at, predicted_sec, actual_sec, on_time "
+                        "FROM eta_history WHERE id = %s", (hid,)).fetchone()
+                    closed_rows.append({
+                        "id": row[0], "booking_id": row[1], "driver_id": row[2],
+                        "route_key": row[3], "method": row[4],
+                        "computed_at": row[5].isoformat() if row[5] else None,
+                        "predicted_sec": row[6], "actual_sec": row[7],
+                        "on_time": row[8],
+                    })
     except Exception as e:
         logger.warning(f"[ETA-CP] completion pass failed: {e}")
-    return opened, closed
+    return opened, closed, closed_rows
