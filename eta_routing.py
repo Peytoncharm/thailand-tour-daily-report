@@ -38,14 +38,22 @@ _GOOGLE_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 _warned_no_key = False
 
 
+def _api_key():
+    """Orathai created the key as GOOGLE_MAPS_API_KEY (restricted to
+    Geocoding + Routes — the same key serves the geocode-upgrade queue
+    later). GOOGLE_ROUTING_API_KEY kept as a fallback name."""
+    return (os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
+            or os.environ.get("GOOGLE_ROUTING_API_KEY", "").strip())
+
+
 def get_route_eta(from_latlng, to_latlng):
     """One road-routing call: {'sec': int, 'km': float} or None.
     Provider per D1: Google Routes API v2. No key -> None (skip)."""
     global _warned_no_key
-    key = os.environ.get("GOOGLE_ROUTING_API_KEY", "").strip()
+    key = _api_key()
     if not key:
         if not _warned_no_key:
-            logger.info("[STAGE2] GOOGLE_ROUTING_API_KEY not set — stage-2 "
+            logger.info("[STAGE2] GOOGLE_MAPS_API_KEY not set — stage-2 "
                         "calls skip cleanly until billing/key exist (D1)")
             _warned_no_key = True
         return None
@@ -129,8 +137,8 @@ def run_stage2(b, win, dpos, pin, remaining_sec, route_key, drv_code, counters):
                 leg1 = get_route_eta(dpos, near)
                 leg2 = get_route_eta(far, pin)
                 if leg1 is None or leg2 is None:
-                    counters["skipped_no_key" if not os.environ.get(
-                        "GOOGLE_ROUTING_API_KEY") else "provider_error"] += 1
+                    counters["skipped_no_key" if not _api_key()
+                             else "provider_error"] += 1
                     return
                 queue_sec = int(model.get("queue_min_baseline", {})
                                 .get("default", 15)) * 60
@@ -141,8 +149,8 @@ def run_stage2(b, win, dpos, pin, remaining_sec, route_key, drv_code, counters):
             else:
                 res = get_route_eta(dpos, pin)
                 if res is None:
-                    counters["skipped_no_key" if not os.environ.get(
-                        "GOOGLE_ROUTING_API_KEY") else "provider_error"] += 1
+                    counters["skipped_no_key" if not _api_key()
+                             else "provider_error"] += 1
                     return
                 sec, km, method = res["sec"], res["km"], "road"
 
