@@ -42,12 +42,113 @@ def _check_key():
     return True
 
 
+# ─────────────────────────────────────────────────────────────
+# DEMO MODE (11 Aug): ?demo=1 overlays SIMULATED data generated from
+# the real zone table (bundled CSV — zero DB reads, zero writes
+# anywhere). Deterministic seed -> stable board across 30s refreshes.
+# Driver codes D-xx (real codes are P####) so nothing can be mistaken.
+# ─────────────────────────────────────────────────────────────
+
+_DEMO_ZONE_WEIGHTS = [
+    ("kai bae", 6), ("klong prao", 4), ("white sand beach", 3),
+    ("lonely beach", 3), ("bailan beach", 1), ("klong son", 1),
+    ("bang bao pier", 2), ("salak phet", 1),
+    ("ao sapparot pier", 2), ("ao thammachat pier", 2),
+    ("laem ngop pier", 1), ("trat town", 2), ("trat airport", 2),
+    ("laem sok pier", 1), ("chanthaburi", 1), ("rayong", 1),
+    ("ban phe pier", 1), ("pattaya", 2), ("suvarnabhumi", 3),
+    ("don mueang", 1), ("mo chit bus terminal", 1),
+    ("ekkamai bus terminal", 1),
+]
+_DEMO_NAMES = ["Anna K", "Grzegorz W", "Tom H", "Lena M", "Marco P",
+               "Sophie B", "James T", "Nina R", "Oliver S", "Emma L",
+               "Lukas F", "Marie C", "David N", "Julia W", "Chris O",
+               "Petra Z", "Sam Y", "Ida Q", "Noah V", "Mia D",
+               "Erik J", "Clara G", "Ben A", "Zoe E", "Felix U"]
+
+def _demo_payload():
+    import random
+    from pickup_matcher import _load_points
+    pts = _load_points()
+    rng = random.Random(20260811)   # fixed seed -> stable board
+
+    zone_pool = []
+    for z, w in _DEMO_ZONE_WEIGHTS:
+        if z in pts:
+            zone_pool.extend([z] * w)
+
+    drivers = []
+    n_drivers = 32
+    for i in range(n_drivers):
+        z = zone_pool[rng.randrange(len(zone_pool))]
+        p = pts[z]
+        lat = p["lat"] + rng.uniform(-0.012, 0.012)
+        lng = p["lng"] + rng.uniform(-0.012, 0.012)
+        r = rng.random()
+        if r < 0.60:
+            age = rng.randint(20, 280)
+        elif r < 0.80:
+            age = rng.randint(400, 1100)
+        elif r < 0.86:
+            age = rng.randint(1500, 4000)
+        else:
+            age = None   # grey idle
+        drivers.append({
+            "code": f"D-{i+1:02d}", "name": f"คนขับสาธิต {i+1:02d}",
+            "lat": round(lat, 6), "lng": round(lng, 6),
+            "speed": None, "batt": rng.randint(35, 98),
+            "age_s": age,
+            "last_seen_ict": None if age is None else
+                datetime.now(ICT).strftime("%H:%M:%S"),
+        })
+
+    bookings = []
+    now = datetime.now(ICT)
+    n_book = 20
+    for i in range(n_book):
+        z = zone_pool[rng.randrange(len(zone_pool))]
+        p = pts[z]
+        day = now if rng.random() < 0.55 else now + timedelta(days=1)
+        hh = rng.choice([6, 7, 8, 8, 9, 9, 10, 11, 13, 15, 17, 18])
+        status = rng.choice(["Confirmed"] * 7 + ["", "Pending", ""])
+        typ = rng.choice(["Private Transfer"] * 5 + ["Join Transfer"] * 2
+                         + ["Activity Tour"] * 3)
+        bookings.append({
+            "booking_id": f"DEMO-{i+1:03d}",
+            "name": _DEMO_NAMES[i % len(_DEMO_NAMES)],
+            "tour_date": day.strftime("%Y-%m-%d"),
+            "pickup_time": f"{hh:02d}:{rng.choice(['00','15','30','45'])}",
+            "status": status, "type": typ,
+            "lat": round(p["lat"] + rng.uniform(-0.006, 0.006), 6),
+            "lng": round(p["lng"] + rng.uniform(-0.006, 0.006), 6),
+            "precision": p["precision"], "driver": f"D-{rng.randint(1, n_drivers):02d}",
+            "pickup_location": z.title(),
+        })
+    # honest no-coords entries
+    for i, txt in enumerate(["Sunset Villa (address unclear)",
+                             "Meet at 7-11 near the temple",
+                             "Blue House Homestay"]):
+        bookings.append({
+            "booking_id": f"DEMO-NC-{i+1}", "name": _DEMO_NAMES[-(i+1)],
+            "tour_date": now.strftime("%Y-%m-%d"),
+            "pickup_time": f"{rng.randint(8, 17):02d}:30",
+            "status": "Confirmed", "type": "Private Transfer",
+            "lat": None, "lng": None, "precision": None,
+            "driver": None, "pickup_location": txt,
+        })
+
+    return {"ok": True, "demo": True, "drivers": drivers,
+            "bookings": bookings,
+            "thresholds": {"green_s": AGE_GREEN_S, "amber_s": AGE_AMBER_S}}
+
+
 @dashboard_bp.route("/team/dashboard", methods=["GET"])
 def team_dashboard():
     if not _check_key():
         return jsonify({"error": "unauthorized"}), 401
     return render_template("team_dashboard.html",
-                           key=request.args.get("key", ""))
+                           key=request.args.get("key", ""),
+                           demo=(request.args.get("demo") == "1"))
 
 
 def _bookings_today_tomorrow():
@@ -103,6 +204,8 @@ def _bookings_today_tomorrow():
 def team_dashboard_data():
     if not _check_key():
         return jsonify({"error": "unauthorized"}), 401
+    if request.args.get("demo") == "1":
+        return jsonify(_demo_payload()), 200
     drivers = []
     try:
         from db import _direct_conn
