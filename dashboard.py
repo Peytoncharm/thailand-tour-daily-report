@@ -56,14 +56,15 @@ def _bookings_today_tomorrow():
     honest about what can't render (no guessed positions)."""
     out = []
     try:
-        from db import _get_pool
-        pool = _get_pool()
-        if pool is None:
-            return out
+        # Dedicated connection (11 Aug — third cold-pool acquire timeout,
+        # this time surfacing in the dashboard header): same proven
+        # pattern as purge/status probes. ~2 short conns/min at the 30s
+        # poll; keeps the board truthful even when the pool is sick.
+        from db import _direct_conn
         now = datetime.now(ICT)
         days = [now.strftime("%Y-%m-%d"),
                 (now + timedelta(days=1)).strftime("%Y-%m-%d")]
-        with pool.connection() as conn:
+        with _direct_conn("dashboard-bookings") as conn:
             rows = conn.execute(
                 "SELECT booking_id, tour_date, pickup_ts, status, "
                 "type_of_package, pickup_lat, pickup_lng, geocode_precision, "
@@ -104,11 +105,8 @@ def team_dashboard_data():
         return jsonify({"error": "unauthorized"}), 401
     drivers = []
     try:
-        from db import _get_pool
-        pool = _get_pool()
-        if pool is None:
-            return jsonify({"ok": False, "reason": "no database", "drivers": []}), 200
-        with pool.connection() as conn:
+        from db import _direct_conn
+        with _direct_conn("dashboard-drivers") as conn:
             rows = conn.execute(
                 "SELECT driver_id, ts, lat, lng, speed, batt, updated_at "
                 "FROM driver_latest ORDER BY updated_at DESC LIMIT 500"
