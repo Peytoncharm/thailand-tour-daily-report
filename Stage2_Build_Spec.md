@@ -106,6 +106,33 @@ Timetable + queue baselines are **editable data, not code** — `ferry_model.jso
 **Gate:** ≥3 days shadow with daily "would-have-alerted" digest reviewed by Orathai; false-positive rate acceptable to her; THEN live flag (env var, same kill-switch pattern as GEOCODE_ENABLED).
 **Shadow: yes — the whole engine ships dark behind `ALERTS_ENABLED`.**
 
+### Step 7b — Two-tier delivery + escalation (Orathai directive 11 Aug; folds in before the September enable)
+
+**Tier assignment (every alert type maps to exactly one tier):**
+
+| Tier | Alert types | Delivery |
+|---|---|---|
+| NORMAL | at-risk ETA, not-departed, wrong-direction, no-signal outside T-60, positioning-nudge outcomes | Plain LINE group message (as Step 7 already plans) |
+| **CRITICAL** | **missed-customer** (pickup passed + grace, no detected arrival, own-GPS booking — the lifecycle dashboard's red pin, promoted to an alert), **driver-dark-near-pickup** (rule-1 no-signal inside T-60/T-30 with an assigned own-GPS driver) | @mention-all + repeat-until-acknowledged (below) |
+
+**CRITICAL delivery mechanics:**
+1. **@mention-all**: LINE Messaging API `textV2` message with a `mention all` substitution — pings every member of the team ops group. Fallback if the API rejects (older group type): plain text prefixed `🚨🚨 CRITICAL` — degraded but never silently dropped.
+2. **Acknowledgment**: the alert message carries a quick-reply postback button "รับเรื่องแล้ว ✅". Tapping it hits the LINE webhook → marks the alert acknowledged (`ack_at`, `ack_by` on alert_log). A typed reply containing "รับทราบ"/"ack" in the group within the window counts too (webhook keyword match) — buttons fail on some clients.
+3. **Repeat-if-unacknowledged**: the 15-min checkpoint cron doubles as the repeat scheduler — a CRITICAL alert with no `ack_at` after R minutes is re-sent (marked `repeat_of=<original id>`), up to K repeats. Repeats do NOT multiply-count against the daily budget (the original counted once).
+4. **Budget interplay**: CRITICAL alerts count against the 20/day budget but are **never suppressed by it** — overflow-to-digest (D5) applies to NORMAL only. A missed customer must never die in a digest.
+5. **Schema (build item)**: alert_log gains `tier text`, `ack_at timestamptz`, `ack_by text`, `repeat_of bigint` — nullable columns, the established ADD COLUMN IF NOT EXISTS pattern.
+
+**Voice-call escalation — DESIGN ONLY (not built until separately approved):**
+- Trigger: CRITICAL alert still unacknowledged after **N minutes** [PROPOSED N=10] AND all K repeats exhausted.
+- Mechanism: TTS call via a voice API (Twilio Programmable Voice is the default candidate — Thai numbers supported, pay-per-call; Orathai may prefer a Thai provider) to an **ordered on-call list** (data file, not code: `oncall.json` — name, phone, order). No answer after 30 s → next number. Message: fixed Thai TTS "มีงานวิกฤต [booking] กรุณาเช็ค LINE กลุ่มทีมด่วน" — no customer PII spoken onto voicemail.
+- Acknowledgment closes the loop: answering the call does NOT auto-ack (a picked-up-and-hung-up call proves nothing) — DTMF "กด 1 เพื่อรับเรื่อง" → provider webhook → ack, or the LINE button as before.
+- Own kill switch (`ALERTS_VOICE_ENABLED`) + own budget [PROPOSED 5 calls/day] + full call log in alert_log (`channel='voice'`).
+- Explicitly out of scope until approved: provider account, phone-number purchase, cost sign-off — all Orathai/boss decisions.
+
+**Open decisions added (join §0):**
+- **D8** — R (repeat interval) and K (max repeats) for CRITICAL [PROPOSED R=5 min, K=2].
+- **D9** — Voice escalation: N minutes [PROPOSED 10], provider (Twilio vs Thai), on-call list + order, daily call budget [PROPOSED 5].
+
 ### Step 8 — Go-live sequencing
 Shadow everything ≥3 days → Orathai reviews digests → enable alerts for `exact`-precision bookings only → widen to `zone` after 1 clean week → `generic` stays coarse forever. Each widening is an env-var change, no deploy.
 
