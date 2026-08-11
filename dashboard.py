@@ -36,10 +36,21 @@ AGE_AMBER_S = 1200    # 5–20 min
 
 
 def _check_key():
+    """Two keys open the boards: CRON_SECRET (works everywhere, as
+    always) and VIEW_KEY (viewer key, 11 Aug) — accepted ONLY by the
+    three /team/ routes in this module (dashboard, board, and their
+    shared data endpoint; the pages are dead without data). Every
+    /cron//admin//test/ route checks CRON_SECRET alone in the
+    app-level gate, so the viewer key 401s there by construction.
+    VIEW_KEY unset -> no viewer access (safe default)."""
+    k = request.args.get("key", "")
     secret = os.environ.get("CRON_SECRET", "")
-    if secret and request.args.get("key", "") != secret:
-        return False
-    return True
+    view = os.environ.get("VIEW_KEY", "")
+    if secret and k == secret:
+        return True
+    if view and k == view:
+        return True
+    return not secret  # CRON_SECRET unset: open, unchanged behaviour
 
 
 # ─────────────────────────────────────────────────────────────
