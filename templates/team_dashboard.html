@@ -83,7 +83,9 @@
   <button class="fbtn on" data-f="confirmed">Confirmed</button>
   <button class="fbtn on" data-f="other">สถานะอื่น</button>
   <button class="fbtn on" data-f="transfer">Transfer</button>
-  <button class="fbtn on" data-f="tour">Tour</button>
+  <!-- BU separation (Orathai, 11 Aug): Tour layer ships default-OFF —
+       at high-season volume the mixed view drowns; the chip re-enables it -->
+  <button class="fbtn" data-f="tour">Tour</button>
 </div>
 <div id="nocoords" style="display:none">
   <h3>งานที่ยังไม่มีพิกัด (แสดงบนแผนที่ไม่ได้)</h3>
@@ -119,7 +121,7 @@
   const markers = new Map();   // driver code -> circleMarker
   const bmarkers = new Map();  // booking_id -> marker
   const F = { drivers: true, bookings: true, confirmed: true, other: true,
-              transfer: true, tour: true };
+              transfer: true, tour: false };  // Tour default-off (BU separation)
   document.querySelectorAll(".fbtn").forEach(b => b.addEventListener("click", () => {
     F[b.dataset.f] = !F[b.dataset.f];
     b.classList.toggle("on", F[b.dataset.f]);

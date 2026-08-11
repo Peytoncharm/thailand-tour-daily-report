@@ -38,6 +38,12 @@
   .pill { border:1px solid var(--line); border-radius:8px; padding:1px 8px;
     font-size:11px; color:var(--muted); white-space:nowrap; }
   .pill.ok { color:var(--green); border-color:#1e4d3e; }
+  /* BU tabs (11 Aug): Transfer-only default — high-season mixed view drowns */
+  #tabs { margin:2px 0 12px; display:flex; gap:6px; }
+  .tab { background:var(--panel2); color:var(--muted); border:1px solid var(--line);
+    border-radius:8px 8px 0 0; padding:7px 18px; cursor:pointer; font-size:13px; }
+  .tab.on { color:var(--text); border-color:#3a4468; background:#1a1f33;
+    border-bottom-color:#1a1f33; font-weight:600; }
   #summary { margin:10px 0 14px; display:flex; gap:8px; flex-wrap:wrap; }
   .sumbox { background:var(--panel2); border:1px solid var(--line);
     border-radius:10px; padding:8px 14px; font-size:12px; color:var(--muted); }
@@ -64,6 +70,11 @@
   <span class="sub" id="stamp"></span>
 </header>
 <main>
+  <div id="tabs">
+    <button class="tab" data-bu="transfer">Transfer</button>
+    <button class="tab" data-bu="tour">Tour</button>
+    <button class="tab" data-bu="all">ทั้งหมด</button>
+  </div>
   <div id="summary"></div>
   <table>
     <thead><tr>
@@ -86,6 +97,29 @@
 
   let bookings = [], driverAge = {}, thresholds = {green_s:300, amber_s:1200};
   let sortKey = "pickup", sortAsc = true;
+
+  // BU separation (Orathai, 11 Aug): board defaults to TRANSFER-ONLY.
+  // ?bu=transfer|tour|all honored on load; tabs switch client-side and
+  // keep the URL shareable. Demo rows pass through the same filter.
+  const _buParam = new URLSearchParams(location.search).get("bu");
+  let BU = ["transfer", "tour", "all"].includes(_buParam) ? _buParam : "transfer";
+  function buMatch(bk) {
+    if (BU === "all") return true;
+    const isTransfer = (bk.type || "").toLowerCase().includes("transfer");
+    return (BU === "transfer") === isTransfer;
+  }
+  function paintTabs() {
+    document.querySelectorAll(".tab").forEach(t =>
+      t.classList.toggle("on", t.dataset.bu === BU));
+  }
+  document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+    BU = t.dataset.bu;
+    const u = new URL(location.href);
+    u.searchParams.set("bu", BU);
+    history.replaceState(null, "", u);
+    paintTabs(); render();
+  }));
+  paintTabs();
 
   // Zoho deep links (live records only — demo rows stay plain text:
   // a dead link is more honest than a broken one)
@@ -147,7 +181,8 @@
   }
   function render() {
     const rows = document.getElementById("rows");
-    const list = [...bookings].sort((a,b) => {
+    const view = bookings.filter(buMatch);   // BU tab scope — rows AND summaries
+    const list = [...view].sort((a,b) => {
       const at = attention(a)?0:1, bt = attention(b)?0:1;
       if (at !== bt) return at-bt;                       // attention first
       const va = sortVal(a), vb = sortVal(b);
@@ -169,11 +204,12 @@
           <span class="m">${s.label}</span></td>
       </tr>`;
     }).join("");
-    const n = bookings.length;
-    const attn = bookings.filter(attention).length;
-    const noC = bookings.filter(b => b.lat == null).length;
-    const noD = bookings.filter(b => !b.driver).length;
-    document.getElementById("count").textContent = n + " งานวันนี้/พรุ่งนี้";
+    const n = view.length;
+    const attn = view.filter(attention).length;
+    const noC = view.filter(b => b.lat == null).length;
+    const noD = view.filter(b => !b.driver).length;
+    const label = BU === "all" ? "" : BU === "tour" ? " (Tour)" : " (Transfer)";
+    document.getElementById("count").textContent = n + " งานวันนี้/พรุ่งนี้" + label;
     document.getElementById("summary").innerHTML =
       `<div class="sumbox"><b>${n}</b>งานทั้งหมด</div>` +
       `<div class="sumbox"><b style="color:var(--red)">${attn}</b>ต้องดู ⚠</div>` +
