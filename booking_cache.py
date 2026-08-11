@@ -31,6 +31,7 @@ Endpoints:
 import json
 import logging
 import os
+from datetime import datetime
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -138,6 +139,38 @@ def _maybe_geocode(rec: dict, cols: dict):
         logger.warning(f"[GEOCODE] match failed {rec.get('id')}: {e}")
 
 
+def _positioning(rec: dict, cols: dict):
+    """P-B (shadow fields, 11 Aug): positioning_required + position_deadline
+    computed at cache time from the editable ferry model. Zone comes from
+    the payload, matcher live-classify as fallback (the payload-lag
+    pattern). Recomputed on every upsert — pickup times change, and a
+    one-sweep matcher hiccup self-heals next sweep. Nothing reads these
+    fields yet (P-D consumes them, shadow first). Never raises."""
+    cols["positioning_required"] = None
+    cols["position_deadline"] = None
+    try:
+        zone = (rec.get("Pickup_Zone") or "").strip().lower()
+        if not zone:
+            try:
+                from pickup_matcher import classify
+                zone = (classify(rec.get("Pickup_Location") or "")[0] or "").lower()
+            except Exception:
+                zone = ""
+        pdt = rec.get("Pickup_Date_Time") or ""
+        pk = None
+        if "T" in pdt:
+            try:
+                pk = datetime.fromisoformat(pdt)
+            except ValueError:
+                pk = None
+        from ferry_model import positioning_for
+        req, dl = positioning_for(zone, pk)
+        cols["positioning_required"] = req
+        cols["position_deadline"] = dl
+    except Exception as e:
+        logger.warning(f"[POSITION] compute failed {rec.get('id')}: {e}")
+
+
 def upsert_record(rec: dict) -> bool:
     """UPSERT one raw Zoho record into booking_cache. Never raises."""
     if not isinstance(rec, dict) or not rec.get("id"):
@@ -149,14 +182,17 @@ def upsert_record(rec: dict) -> bool:
             return False
         cols = _extract_columns(rec)
         _maybe_geocode(rec, cols)
+        _positioning(rec, cols)
         with pool.connection() as conn:
             conn.execute(
                 """
                 INSERT INTO booking_cache
                   (booking_id, provider_id, driver_id, tour_date, pickup_ts,
                    status, type_of_package, pickup_lat, pickup_lng,
-                   geocode_precision, payload, refreshed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now())
+                   geocode_precision, positioning_required, position_deadline,
+                   payload, refreshed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s::jsonb, now())
                 ON CONFLICT (booking_id) DO UPDATE SET
                   provider_id = EXCLUDED.provider_id,
                   driver_id = EXCLUDED.driver_id,
@@ -168,6 +204,8 @@ def upsert_record(rec: dict) -> bool:
                   pickup_lng = COALESCE(EXCLUDED.pickup_lng, booking_cache.pickup_lng),
                   geocode_precision = COALESCE(EXCLUDED.geocode_precision,
                                                booking_cache.geocode_precision),
+                  positioning_required = EXCLUDED.positioning_required,
+                  position_deadline = EXCLUDED.position_deadline,
                   payload = EXCLUDED.payload,
                   refreshed_at = now()
                 """,
@@ -175,6 +213,7 @@ def upsert_record(rec: dict) -> bool:
                  cols["tour_date"], cols["pickup_ts"], cols["status"],
                  cols["type_of_package"], cols.get("pickup_lat"),
                  cols.get("pickup_lng"), cols.get("geocode_precision"),
+                 cols.get("positioning_required"), cols.get("position_deadline"),
                  json.dumps(rec)),
             )
         return True
@@ -191,6 +230,40 @@ def upsert_record(rec: dict) -> bool:
 # ─────────────────────────────────────────────────────────────
 # Read helpers (for checkpoint conversion in the next step)
 # ─────────────────────────────────────────────────────────────
+
+@booking_cache_bp.route("/cron/positioning-report", methods=["GET"])
+def positioning_report():
+    """P-B gate surface (read-only): today+tomorrow cache rows with a
+    positioning requirement — booking, pickup, deadline. Auth: app gate."""
+    rows = []
+    try:
+        from datetime import timedelta as _td, timezone as _tz
+        from db import _direct_conn
+        now = datetime.now(_tz(_td(hours=7)))
+        days = [now.strftime("%Y-%m-%d"),
+                (now + _td(days=1)).strftime("%Y-%m-%d")]
+        with _direct_conn("positioning-report") as conn:
+            for bid, td, pts, req, dl, ploc in conn.execute(
+                    "SELECT booking_id, tour_date, pickup_ts, positioning_required, "
+                    "position_deadline, payload->>'Pickup_Location' "
+                    "FROM booking_cache WHERE tour_date = ANY(%s) "
+                    "AND positioning_required IS NOT NULL "
+                    "ORDER BY pickup_ts NULLS LAST", (days,)).fetchall():
+                rows.append({
+                    "booking_id": bid, "tour_date": str(td),
+                    "pickup_ts": pts.isoformat() if pts else None,
+                    "positioning_required": req,
+                    "position_deadline": dl.isoformat() if dl else None,
+                    "pickup_location": (ploc or "")[:60],
+                })
+    except Exception as e:
+        return jsonify({"ok": False, "reason": str(e)[:200]}), 500
+    return jsonify({"ok": True, "shadow": True, "count": len(rows),
+                    "note": "fields are computed at cache time by the 15-min "
+                            "sweep; a fresh deploy needs one sweep before "
+                            "rows appear here",
+                    "rows": rows}), 200
+
 
 def get_booking(booking_id: str):
     """Cache-first read of one booking (raw Zoho-shaped dict).

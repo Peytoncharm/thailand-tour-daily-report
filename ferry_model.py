@@ -27,13 +27,24 @@ one row per driver+arrival). Auth: app-level /cron gate.
 import json
 import logging
 import os
-from datetime import timedelta
+from datetime import datetime, time, timedelta, timezone
 
 from flask import Blueprint, jsonify
 
 logger = logging.getLogger(__name__)
 
 ferry_bp = Blueprint("ferry_model", __name__)
+
+ICT = timezone(timedelta(hours=7))
+
+# Zone sets for positioning (P-B). Island set mirrors
+# eta_checkpoints.ISLAND_ZONES (kept separately there to avoid an
+# import cycle) plus the island-side pier itself.
+ISLAND_ZONES = {"white sand beach", "klong prao", "kai bae", "lonely beach",
+                "bang bao pier", "salak phet", "klong son", "bailan beach",
+                "koh chang generic", "ao sapparot pier"}
+MAINLAND_NEAR_FERRY = {"ao thammachat pier", "laem ngop pier", "trat town",
+                       "trat airport", "laem sok pier"}
 
 _MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ferry_model.json")
@@ -76,6 +87,44 @@ def _haversine_m(lat1, lng1, lat2, lng2):
     dlat, dlng = radians(lat2 - lat1), radians(lng2 - lng1)
     a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
     return 2 * R * asin(sqrt(a))
+
+
+def _model_minutes(model, key, default_hhmm):
+    try:
+        hh, mm = str(model.get(key, default_hhmm)).split(":")
+        return int(hh) * 60 + int(mm)
+    except Exception:
+        hh, mm = default_hhmm.split(":")
+        return int(hh) * 60 + int(mm)
+
+
+def positioning_for(zone, pickup_dt):
+    """P-B (Layer 1): (positioning_required, position_deadline) for a
+    booking, from the editable model. zone is lowercase; pickup_dt is a
+    tz-aware ICT datetime. (None, None) when no positioning is needed
+    or inputs are unusable. All cutoffs/deadlines are DATA (the JSON),
+    not code — they shift with the ferry timetable and season."""
+    z = (zone or "").strip().lower()
+    if not z or pickup_dt is None:
+        return None, None
+    m = load_model()
+    pk_min = pickup_dt.hour * 60 + pickup_dt.minute
+    day_before = (pickup_dt - timedelta(days=1)).date()
+    if z in ISLAND_ZONES and pk_min < _model_minutes(m, "island_cutoff", "09:00"):
+        # D-P1: the 17:45 boat the evening before is the deadline
+        dl = _model_minutes(m, "positioning_deadline", "17:45")
+        return ("island overnight",
+                datetime.combine(day_before, time(dl // 60, dl % 60), tzinfo=ICT))
+    if z in MAINLAND_NEAR_FERRY and pk_min < _model_minutes(m, "mainland_cutoff", "07:00"):
+        # deadline = last island->mainland sailing the evening before
+        try:
+            hh, mm = str(m.get("sailings", {}).get("last", "18:30")).split(":")
+            dl = int(hh) * 60 + int(mm)
+        except Exception:
+            dl = 18 * 60 + 30
+        return ("mainland overnight",
+                datetime.combine(day_before, time(dl // 60, dl % 60), tzinfo=ICT))
+    return None, None
 
 
 def near_pier(lat, lng, piers):
