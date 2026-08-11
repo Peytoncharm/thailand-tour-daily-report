@@ -184,21 +184,26 @@
         if (!bookingVisible(bk)) continue;
         bseen.add(bk.booking_id);
         const col = bookingColour(bk);
+        // Partner-operated (Join Transfer + all Tours): hollow diamond,
+        // no GPS expectation — product decision 11 Aug. Only Private
+        // Transfer keeps the solid fill (our own tracking applies).
+        const isPartner = ((bk.type || "").toLowerCase() !== "private transfer");
+        const fill = isPartner ? "transparent" : `${col}33`;
+        const pinHtml = `<div class="bpin" style="border-color:${col};background:${fill}"></div>`;
         const html = `<div class="pop"><b>${bk.name || "(ไม่มีชื่อ)"}</b>
           <div class="m">${bk.type || "-"} · ${bk.status || "ไม่มีสถานะ"}<br>
           ${bk.tour_date || ""} ⏰ ${bk.pickup_time || "-"}<br>
           รับที่: ${bk.pickup_location || "-"}<br>
-          คนขับ: ${bk.driver || "ยังไม่มี"} · พิกัด: ${bk.precision || "-"}</div></div>`;
+          คนขับ: ${bk.driver || "ยังไม่มี"} · พิกัด: ${bk.precision || "-"}
+          ${isPartner ? '<br>🤝 partner-operated — no GPS expected' : ''}</div></div>`;
         if (bmarkers.has(bk.booking_id)) {
           const m = bmarkers.get(bk.booking_id);
           m.setLatLng([bk.lat, bk.lng]);
-          m.setIcon(L.divIcon({ className: "",
-            html: `<div class="bpin" style="border-color:${col};background:${col}33"></div>`,
+          m.setIcon(L.divIcon({ className: "", html: pinHtml,
             iconSize: [14, 14], iconAnchor: [7, 7] }));
           m.getPopup().setContent(html);
         } else {
-          const m = L.marker([bk.lat, bk.lng], { icon: L.divIcon({ className: "",
-            html: `<div class="bpin" style="border-color:${col};background:${col}33"></div>`,
+          const m = L.marker([bk.lat, bk.lng], { icon: L.divIcon({ className: "", html: pinHtml,
             iconSize: [14, 14], iconAnchor: [7, 7] }) }).addTo(map).bindPopup(html);
           bmarkers.set(bk.booking_id, m);
         }
