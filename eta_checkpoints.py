@@ -149,6 +149,16 @@ def _open_skeleton_row(b, win, drv_code):
         if pool is None:
             return
         method = f"checkpoint:{win}"
+        route_key = (b.get("Route_Key") or "").strip() or None
+        if not route_key:
+            # Payload lags the geocoder by one sweep (same class as the
+            # zone lag) — derive live so no learning row is born null.
+            try:
+                from pickup_matcher import match_booking
+                route_key = match_booking(b.get("Pickup_Location"),
+                                          b.get("Dropoff_Location")).get("route_key")
+            except Exception:
+                route_key = None
         with pool.connection() as conn:
             exists = conn.execute(
                 "SELECT 1 FROM eta_history WHERE booking_id = %s AND method = %s "
@@ -160,8 +170,7 @@ def _open_skeleton_row(b, win, drv_code):
             conn.execute(
                 "INSERT INTO eta_history (booking_id, driver_id, route_key, method) "
                 "VALUES (%s, %s, %s, %s)",
-                (str(b.get("id")), drv_code,
-                 (b.get("Route_Key") or None), method),
+                (str(b.get("id")), drv_code, route_key, method),
             )
         _opened_this_pass += 1
     except Exception as e:
