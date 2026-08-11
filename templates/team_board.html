@@ -94,15 +94,18 @@
     return `<a href="${url}" target="_blank" rel="noopener"
       style="color:inherit;text-decoration:underline dotted #4da3ff;text-underline-offset:3px">${text}</a>`;
   }
+  // Browser tabs use Zoho INTERNAL module names, not api_names —
+  // verified from org metadata 11 Aug (module_name fields):
+  //   Koh_Chang_Orders -> CustomModule3, Providers -> CustomModule7
   function customerCell(bk) {
     const nm = bk.name || "(ไม่มีชื่อ)";
     if (DEMO || !bk.booking_id || String(bk.booking_id).startsWith("DEMO")) return nm;
-    return zlink(`${ZOHO}/Koh_Chang_Orders/${bk.booking_id}`, nm);
+    return zlink(`${ZOHO}/CustomModule3/${bk.booking_id}`, nm);
   }
   function driverCell(bk) {
     if (!bk.driver) return '<span class="m">ยังไม่มี ⚠</span>';
     if (DEMO || !bk.provider_id) return bk.driver;
-    return zlink(`${ZOHO}/Providers/${bk.provider_id}`, bk.driver);
+    return zlink(`${ZOHO}/CustomModule7/${bk.provider_id}`, bk.driver);
   }
 
   function signal(bk) {
