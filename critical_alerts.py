@@ -105,13 +105,20 @@ def _detect_states():
             info["alert_type"] = "missed-pickup"
             states[f"missed:{bid}"] = info
             continue
-        # silent check — only inside the active job window, tracked driver
+        # silent check — only inside the active job window, tracked driver.
+        # Pre-pickup silence is its OWN state (12 Aug): countdown wording,
+        # and a separate alert key so an ack given at T-40 does not silence
+        # a fresh silence alert after the pickup time passes — the ladder
+        # re-escalates on each state transition (presilent → silent →
+        # missed), never across one.
         if drv_code and -WINDOW_BEFORE_S <= past_s <= WINDOW_AFTER_S:
             age = ages.get((drv_code or "").upper())
             if age is None or age > SILENT_AFTER_S:
-                info["alert_type"] = "driver-silent"
+                pre = past_s < 0
+                info["alert_type"] = "driver-silent-pre" if pre else "driver-silent"
                 info["silent_min"] = None if age is None else int(age // 60)
-                states[f"silent:{bid}"] = info
+                info["mins_to_pickup"] = int(-past_s // 60) if pre else None
+                states[("presilent:" if pre else "silent:") + str(bid)] = info
     return states
 
 
@@ -136,6 +143,11 @@ def _driver_line(info):
 def _send_alert(alert_key, info, repeat_count):
     if info["alert_type"] == "missed-pickup":
         header = "🔴 เลยเวลารับ — ยังไม่มีคนไปถึง (อาจพลาดลูกค้า!)"
+    elif info["alert_type"] == "driver-silent-pre":
+        mins = info.get("silent_min")
+        quiet = f"เงียบ {mins} นาที" if mins is not None else "ไม่มีสัญญาณเลย"
+        left = info.get("mins_to_pickup")
+        header = f"🔴 คนขับ{quiet} — อีก {left} นาทีถึงเวลารับ (ต้องจัดการก่อนสาย!)"
     else:
         mins = info.get("silent_min")
         quiet = f"เงียบ {mins} นาที" if mins is not None else "ไม่มีสัญญาณเลย"
