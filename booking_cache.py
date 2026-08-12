@@ -364,6 +364,46 @@ def webhook_booking_cache_upsert():
     return jsonify({"ok": ok, "booking_id": booking_id}), 200
 
 
+def _heal_missing_geocode(exclude=frozenset(), limit=20):
+    """Self-heal pass (12 Aug): a Zoho edit can wipe Pickup_Zone/Lat on a
+    booking OUTSIDE the today+tomorrow sweep window (e.g. a Saturday
+    booking edited on Tuesday) — nothing re-geocodes it until the booking
+    finally enters the window days later. Re-fetch cached FUTURE bookings
+    whose payload lost zone/coords so they heal on the NEXT sweep instead.
+    Zoho reads bounded by `limit`; permanently unmatchable pickup texts
+    retry each sweep but stay inside the same bound. Never raises."""
+    if os.environ.get("GEOCODE_ENABLED", "").lower() != "true":
+        return 0
+    from datetime import timedelta as _td, timezone as _tz
+    today = datetime.now(_tz(_td(hours=7))).strftime("%Y-%m-%d")
+    healed = 0
+    try:
+        from db import _get_pool
+        pool = _get_pool()
+        if pool is None:
+            return 0
+        with pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT booking_id FROM booking_cache "
+                "WHERE tour_date >= %s "
+                "AND (payload->>'Pickup_Zone' IS NULL OR payload->>'Pickup_Lat' IS NULL) "
+                "AND COALESCE(payload->>'Pickup_Location','') <> '' "
+                "ORDER BY tour_date LIMIT %s",
+                (today, limit),
+            ).fetchall()
+        for (bid,) in rows:
+            bid = str(bid)
+            if bid in exclude:
+                continue  # this sweep just upserted it — geocode already ran
+            rec = _fetch_booking_from_zoho(bid)
+            if rec and upsert_record(rec):
+                healed += 1
+                logger.info(f"[CACHE] geocode heal: re-cached {bid}")
+    except Exception as e:
+        logger.warning(f"[CACHE] geocode heal pass failed: {e}")
+    return healed
+
+
 def _remove_missing_for_date(day, present_ids):
     """Delete cache rows for `day` whose booking_id is NOT in the
     non-empty Zoho fetch result. Caller guarantees present_ids is
@@ -405,6 +445,7 @@ def cron_booking_cache_sweep():
     days = [now.strftime("%Y-%m-%d"),
             (now + timedelta(days=1)).strftime("%Y-%m-%d")]
     fetched, cached, removed = 0, 0, 0
+    swept_ids = set()
     try:
         from zoho_thailand import zoho_search
         for day in days:
@@ -416,6 +457,7 @@ def cron_booking_cache_sweep():
                     cached += 1
                 if rec.get("id"):
                     day_ids.add(str(rec["id"]))
+            swept_ids |= day_ids
             # CONTROLLED deletion-sync (Orathai, 10 Aug): remove cache rows
             # for this date that Zoho no longer has (ghost bookings). FAIL
             # SAFE: an empty or failed fetch deletes NOTHING — zoho_search
@@ -434,7 +476,9 @@ def cron_booking_cache_sweep():
         logger.error(f"[CACHE] sweep cached NOTHING (fetched={fetched}) — failing loud")
         return jsonify({"ok": False, "reason": "fetched>0 but cached==0 (cache dead?)",
                         "fetched": fetched, "cached": cached}), 500
-    logger.info(f"[CACHE] sweep done: fetched={fetched} cached={cached} removed={removed}")
+    healed = _heal_missing_geocode(exclude=swept_ids)
+    logger.info(f"[CACHE] sweep done: fetched={fetched} cached={cached} "
+                f"removed={removed} healed={healed}")
     return jsonify({"ok": True, "days": days,
                     "fetched": fetched, "cached": cached,
-                    "removed": removed}), 200
+                    "removed": removed, "healed": healed}), 200

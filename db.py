@@ -168,11 +168,21 @@ CREATE INDEX IF NOT EXISTS idx_alert_log_booking
 
 _last_pool_reset = {"at": None}
 
+
+def _now_utc():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
 def report_pool_failure(err):
     """Self-healing: on pool-acquire failure, discard and rebuild the pool
     (rate-limited to once per 5 min so a hard DB outage doesn't thrash).
     The overnight 9->10 Aug wedge stayed broken for hours because nothing
-    ever gave up on the dead pool."""
+    ever gave up on the dead pool.
+    12 Aug: _now_utc was never defined in this module, so every call died
+    on NameError inside the blanket except — the self-heal was a silent
+    no-op since it shipped (proven by the 12 Aug wedge: 70+ min of acquire
+    failures, zero reset lines). Defined above; the swallow now logs."""
     global _pool
     try:
         now = _now_utc()
@@ -188,8 +198,8 @@ def report_pool_failure(err):
                 old.close()
             except Exception:
                 pass
-    except Exception:
-        pass
+    except Exception as heal_err:
+        logger.error(f"[GPS-DB] report_pool_failure itself failed: {heal_err}")
 
 
 def ensure_schema():
