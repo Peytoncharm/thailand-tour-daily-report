@@ -85,15 +85,15 @@
 <header>
   <h1>📋 P&amp;C Transfer — {% if demo %}DEMO {% endif %}Job Board</h1>
   <span class="sub" id="count">…</span>
-  {% if demo %}<span class="demo-badge">DEMO — ข้อมูลจำลอง ไม่ใช่ข้อมูลจริง</span>{% endif %}
-  <a class="navlink" id="maplink" href="#">🗺 แผนที่</a>
+  {% if demo %}<span class="demo-badge">DEMO — simulated data, not real</span>{% endif %}
+  <a class="navlink" id="maplink" href="#">🗺 Map</a>
   <span class="sub" id="stamp"></span>
 </header>
 <main>
   <div id="tabs">
     <button class="tab" data-bu="transfer">Transfer</button>
     <button class="tab" data-bu="tour">Tour</button>
-    <button class="tab" data-bu="all">ทั้งหมด</button>
+    <button class="tab" data-bu="all">All</button>
   </div>
   <div id="summary"></div>
   <details id="legend">
@@ -121,7 +121,7 @@
     <tbody id="rows"></tbody>
   </table>
   <details id="donebox" style="display:none">
-    <summary id="donesum">✓ เสร็จแล้ว</summary>
+    <summary id="donesum">Done ✓</summary>
     <table><tbody id="donerows"></tbody></table>
   </details>
 </main>
@@ -180,26 +180,26 @@
            `&nbsp;·&nbsp;<a href="https://wa.me/${intl}" target="_blank" rel="noopener" style="color:#2dd4a0;text-decoration:none">💬</a></div>`;
   }
   function customerCell(bk) {
-    const nm = bk.name || "(ไม่มีชื่อ)";
+    const nm = bk.name || "(no name)";
     const link = (DEMO || !bk.booking_id || String(bk.booking_id).startsWith("DEMO"))
       ? nm : zlink(`${ZOHO}/CustomModule3/${bk.booking_id}`, nm);
     return link + phoneLine(bk.customer_phone);
   }
   function driverCell(bk) {
-    if (!bk.driver) return '<span class="m">ยังไม่มี ⚠</span>';
+    if (!bk.driver) return '<span class="m">None yet ⚠</span>';
     const link = (DEMO || !bk.provider_id)
       ? bk.driver : zlink(`${ZOHO}/CustomModule7/${bk.provider_id}`, bk.driver);
     return link + phoneLine(bk.driver_phone);
   }
 
   function signal(bk) {
-    if (!bk.driver) return {c:"var(--grey)", label:"ไม่มีคนขับ", rank:3};
-    if (!(bk.driver in driverAge)) return {c:"var(--grey)", label:"ไม่เคยส่งสัญญาณ", rank:2};
+    if (!bk.driver) return {c:"var(--grey)", label:"No driver", rank:3};
+    if (!(bk.driver in driverAge)) return {c:"var(--grey)", label:"Never sent a signal", rank:2};
     const a = driverAge[bk.driver];
-    if (a == null) return {c:"var(--grey)", label:"เงียบ (พักงาน)", rank:1};
-    if (a < thresholds.green_s) return {c:"var(--green)", label:"สด", rank:0};
-    if (a < thresholds.amber_s) return {c:"var(--amber)", label:Math.round(a/60)+" นาที", rank:1};
-    return {c:"var(--red)", label:Math.round(a/60)+" นาทีแล้ว", rank:2};
+    if (a == null) return {c:"var(--grey)", label:"Silent (off-duty)", rank:1};
+    if (a < thresholds.green_s) return {c:"var(--green)", label:"Fresh", rank:0};
+    if (a < thresholds.amber_s) return {c:"var(--amber)", label:Math.round(a/60)+" min", rank:1};
+    return {c:"var(--red)", label:Math.round(a/60)+" min ago", rank:2};
   }
   // Lifecycle (11 Aug): arrival re-uses the Step-2 completion detection.
   // Partner-operated jobs never alarm (no GPS expected) — past pickup
@@ -232,7 +232,7 @@
     const cls = lc === "done" ? "done" : lc === "missed" ? "attn missed"
               : attention(bk) ? "attn" : "";
     const missedTag = lc === "missed"
-      ? '<div class="m" style="color:var(--red);font-weight:600">⚠ อาจพลาดลูกค้า</div>' : '';
+      ? '<div class="m" style="color:var(--red);font-weight:600">⚠ Possible missed customer (อาจพลาดลูกค้า!)</div>' : '';
     const doneTag = lc === "done" ? ' <span class="m">✓</span>' : '';
     return `<tr class="${cls}">
       <td data-l="Pickup"><b>${bk.pickup_time||"–"}</b>${doneTag}
@@ -264,7 +264,7 @@
     rows.innerHTML = list.map(rowHtml).join("");
     const box = document.getElementById("donebox");
     box.style.display = doneL.length ? "block" : "none";
-    document.getElementById("donesum").textContent = `✓ เสร็จแล้ว (${doneL.length})`;
+    document.getElementById("donesum").textContent = `Done ✓ (${doneL.length})`;
     document.getElementById("donerows").innerHTML = doneL.map(rowHtml).join("");
     const n = openL.length;
     const attn = openL.filter(attention).length;
@@ -272,14 +272,14 @@
     const noC = openL.filter(b => b.lat == null).length;
     const noD = openL.filter(b => !b.driver).length;
     const label = BU === "all" ? "" : BU === "tour" ? " (Tour)" : " (Transfer)";
-    document.getElementById("count").textContent = n + " งานเปิดอยู่" + label;
+    document.getElementById("count").textContent = n + " open jobs" + label;
     document.getElementById("summary").innerHTML =
-      `<div class="sumbox"><b>${n}</b>งานเปิดอยู่</div>` +
-      (missed ? `<div class="sumbox"><b style="color:var(--red)">${missed}</b>อาจพลาดลูกค้า ⚠</div>` : '') +
-      `<div class="sumbox"><b style="color:var(--red)">${attn}</b>ต้องดู ⚠</div>` +
-      `<div class="sumbox"><b>${noD}</b>ยังไม่มีคนขับ</div>` +
-      `<div class="sumbox"><b>${noC}</b>ไม่มีพิกัด</div>` +
-      `<div class="sumbox"><b>${doneL.length}</b>เสร็จแล้ว ✓</div>`;
+      `<div class="sumbox"><b>${n}</b>open jobs</div>` +
+      (missed ? `<div class="sumbox"><b style="color:var(--red)">${missed}</b>possible missed (อาจพลาดลูกค้า) ⚠</div>` : '') +
+      `<div class="sumbox"><b style="color:var(--red)">${attn}</b>needs attention ⚠</div>` +
+      `<div class="sumbox"><b>${noD}</b>no driver yet</div>` +
+      `<div class="sumbox"><b>${noC}</b>no coordinates</div>` +
+      `<div class="sumbox"><b>${doneL.length}</b>done ✓</div>`;
   }
   document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
     const k = th.dataset.k;
