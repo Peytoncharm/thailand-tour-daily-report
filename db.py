@@ -152,6 +152,19 @@ ALTER TABLE booking_cache ADD COLUMN IF NOT EXISTS geocode_precision text;
 ALTER TABLE booking_cache ADD COLUMN IF NOT EXISTS positioning_required text;
 ALTER TABLE booking_cache ADD COLUMN IF NOT EXISTS position_deadline timestamptz;
 
+CREATE TABLE IF NOT EXISTS critical_alerts (
+  alert_key   text PRIMARY KEY,
+  alert_type  text NOT NULL,
+  booking_id  text,
+  driver_id   text,
+  first_sent  timestamptz NOT NULL DEFAULT now(),
+  last_sent   timestamptz NOT NULL DEFAULT now(),
+  repeat_count int NOT NULL DEFAULT 1,
+  acked_at    timestamptz,
+  acked_by    text,
+  cleared_at  timestamptz
+);
+
 CREATE TABLE IF NOT EXISTS alert_log (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   booking_id text,
@@ -377,6 +390,7 @@ _PURGES = [
     ("driver_positions", "DELETE FROM driver_positions WHERE ts < now() - interval '30 days'"),
     ("eta_history",      "DELETE FROM eta_history WHERE computed_at < now() - interval '30 days'"),
     ("alert_log",        "DELETE FROM alert_log WHERE sent_at < now() - interval '90 days'"),
+    ("critical_alerts",  "DELETE FROM critical_alerts WHERE first_sent < now() - interval '90 days'"),
     ("booking_cache",    "DELETE FROM booking_cache WHERE tour_date < (now() - interval '60 days')::date"),
 ]
 

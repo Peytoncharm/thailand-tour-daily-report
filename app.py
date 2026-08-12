@@ -64,6 +64,8 @@ app.register_blueprint(alert_bp)
 
 from positioning_check import positioning_bp
 app.register_blueprint(positioning_bp)
+from critical_alerts import critical_bp
+app.register_blueprint(critical_bp)
 
 # --- Readiness gate (Task 1, 9 Aug): Render used port-open to decide
 # "live", so the first requests after a deploy paid Zoho-token + provider-

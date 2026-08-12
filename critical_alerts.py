@@ -1,0 +1,291 @@
+"""
+critical_alerts.py — CRITICAL tier, Step 7b partial (ack + repeat)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Orathai requirement (12 Aug): critical alerts must repeat until a human
+acts — never fire once and go quiet. Two dangerous states:
+
+  missed-pickup : pickup time passed (10-min grace), no arrival detected,
+                  our job (Private Transfer)
+  driver-silent : assigned tracked driver quiet > 20 min while inside the
+                  active job window (T-60 min .. pickup+90 min, not arrived)
+
+Behaviour: LINE flex to the team group with an acknowledge button
+("รับทราบ — กำลังจัดการ"), repeated every ~10 min until someone taps
+acknowledge OR the state clears itself (driver arrives / GPS resumes).
+Ack stops repeats immediately; who + when is logged in critical_alerts.
+
+The button postback travels Transfer OA → transfer-line-webhook, which
+calls POST /alerts/ack here. Voice-call escalation stays design-only
+(D8/D9 pending). The 30-min confirm-card ⏰ is separate and unchanged.
+
+Endpoints:
+  /cron/critical-alerts?key=…   — every 10 min (n8n schedule)
+                                  ?dry_run=true → detect only, no sends
+                                  ?synthetic=1  → inject one fake state
+                                  (self-clears on the next pass)
+  /alerts/ack?key=…             — POST {alert_key, acked_by}
+"""
+
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+
+import requests
+from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger(__name__)
+
+critical_bp = Blueprint("critical_alerts", __name__)
+
+ICT = timezone(timedelta(hours=7))
+
+TRANSFER_LINE_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
+TEAM_LINE_GROUP_ID = os.environ.get("TEAM_LINE_GROUP_ID", "")
+
+SILENT_AFTER_S = 1200          # 20 min — matches the board's red tier
+REPEAT_AFTER_S = 540           # re-send if last send ≥9 min ago (10-min cron)
+GRACE_S = 600                  # same 10-min pickup grace as the dashboard
+WINDOW_BEFORE_S = 3600         # silent check from T-60 min
+WINDOW_AFTER_S = 90 * 60       # …until pickup+90 (missed-pickup owns later)
+
+
+def _thai_person(name):
+    name = (name or "").strip()
+    if not name or name.startswith("คุณ"):
+        return name or "-"
+    return f"คุณ{name}"
+
+
+# ─────────────────────────────────────────────────────────────
+# Detection
+# ─────────────────────────────────────────────────────────────
+
+def _detect_states():
+    """Return {alert_key: state} for both dangerous states, computed from
+    booking_cache + eta_history (arrival) + driver_latest (silence)."""
+    states = {}
+    from db import _get_pool
+    pool = _get_pool()
+    if pool is None:
+        return states
+    now = datetime.now(timezone.utc)
+    today = datetime.now(ICT).strftime("%Y-%m-%d")
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT booking_id, pickup_ts, driver_id, provider_id, "
+            "payload->>'Name', payload->>'Last_Name', "
+            "payload->>'Pickup_Location', payload->>'Dropoff_Location' "
+            "FROM booking_cache WHERE tour_date = %s "
+            "AND lower(coalesce(type_of_package,'')) = 'private transfer' "
+            "ORDER BY pickup_ts NULLS LAST LIMIT 200",
+            (today,),
+        ).fetchall()
+        # Same arrival detection the dashboard uses (Step-2 completion)
+        arrived_ids = {r[0] for r in conn.execute(
+            "SELECT DISTINCT booking_id FROM eta_history "
+            "WHERE actual_sec IS NOT NULL AND method LIKE 'checkpoint:%%' "
+            "AND computed_at > now() - interval '48 hours'").fetchall()}
+        ages = {r[0]: (now - r[1]).total_seconds() for r in conn.execute(
+            "SELECT driver_id, ts FROM driver_latest").fetchall()}
+
+    for (bid, pickup_ts, drv_code, provider_id,
+         name, last_name, pickup_loc, dropoff_loc) in rows:
+        if bid in arrived_ids or pickup_ts is None:
+            continue
+        info = {
+            "booking_id": bid,
+            "customer": f"{(name or '').strip()} {(last_name or '').strip()}".strip() or "-",
+            "pickup_time": pickup_ts.astimezone(ICT).strftime("%H:%M"),
+            "route": f"{(pickup_loc or '-').strip()[:40]} → {(dropoff_loc or '-').strip()[:40]}",
+            "driver_code": drv_code,
+            "provider_id": provider_id,
+        }
+        past_s = (now - pickup_ts).total_seconds()
+        if past_s > GRACE_S:
+            info["alert_type"] = "missed-pickup"
+            states[f"missed:{bid}"] = info
+            continue
+        # silent check — only inside the active job window, tracked driver
+        if drv_code and -WINDOW_BEFORE_S <= past_s <= WINDOW_AFTER_S:
+            age = ages.get((drv_code or "").upper())
+            if age is None or age > SILENT_AFTER_S:
+                info["alert_type"] = "driver-silent"
+                info["silent_min"] = None if age is None else int(age // 60)
+                states[f"silent:{bid}"] = info
+    return states
+
+
+# ─────────────────────────────────────────────────────────────
+# Send
+# ─────────────────────────────────────────────────────────────
+
+def _driver_line(info):
+    name, phone = None, None
+    if info.get("provider_id"):
+        try:
+            from gps_ingest import provider_entry_for_id
+            e = provider_entry_for_id(info["provider_id"]) or {}
+            name, phone = e.get("name"), e.get("phone")
+        except Exception:
+            pass
+    if not name:
+        return "ยังไม่มีคนขับ"
+    return f"{_thai_person(name)}" + (f" · 📞 {phone}" if phone else "")
+
+
+def _send_alert(alert_key, info, repeat_count):
+    if info["alert_type"] == "missed-pickup":
+        header = "🔴 เลยเวลารับ — ยังไม่มีคนไปถึง (อาจพลาดลูกค้า!)"
+    else:
+        mins = info.get("silent_min")
+        quiet = f"เงียบ {mins} นาที" if mins is not None else "ไม่มีสัญญาณเลย"
+        header = f"🔴 คนขับ{quiet} ระหว่างงาน (ต้องจัดการ!)"
+    rep = f" · เตือนครั้งที่ {repeat_count}" if repeat_count > 1 else ""
+    message = {
+        "type": "flex",
+        "altText": f"{header} — {info['customer']} {info['pickup_time']}",
+        "contents": {
+            "type": "bubble",
+            "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "text", "text": header, "weight": "bold", "size": "md",
+                 "color": "#D02020", "wrap": True},
+                {"type": "text", "text": f"ลูกค้า: {info['customer']} · Pickup {info['pickup_time']}",
+                 "size": "sm", "wrap": True},
+                {"type": "text", "text": f"เส้นทาง: {info['route']}", "size": "sm", "wrap": True},
+                {"type": "text", "text": f"คนขับ: {_driver_line(info)}", "size": "sm", "wrap": True},
+                {"type": "text",
+                 "text": f"ระบบจะเตือนซ้ำทุก 10 นาทีจนกว่าจะมีคนกดรับทราบ{rep}",
+                 "size": "xs", "color": "#999999", "wrap": True, "margin": "md"},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "color": "#D02020",
+                 "action": {"type": "postback", "label": "รับทราบ — กำลังจัดการ",
+                            "data": f"action=ack_critical&key={alert_key}",
+                            "displayText": "รับทราบ — กำลังจัดการ"}},
+            ]},
+        },
+    }
+    try:
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={"Authorization": f"Bearer {TRANSFER_LINE_TOKEN}",
+                     "Content-Type": "application/json"},
+            json={"to": TEAM_LINE_GROUP_ID, "messages": [message]},
+            timeout=10,
+        )
+        ok = resp.status_code == 200
+        logger.info(f"[CRITICAL] {alert_key} send #{repeat_count}: {resp.status_code}"
+                    + ("" if ok else f" {resp.text[:150]}"))
+        return ok
+    except Exception as e:
+        logger.error(f"[CRITICAL] {alert_key} send error: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────
+# Cron
+# ─────────────────────────────────────────────────────────────
+
+@critical_bp.route("/cron/critical-alerts", methods=["GET", "POST"])
+def cron_critical_alerts():
+    dry_run = request.args.get("dry_run") == "true"
+    synthetic = request.args.get("synthetic") == "1"
+    try:
+        states = _detect_states()
+        if synthetic:
+            states["missed:SYNTHETIC-TEST"] = {
+                "alert_type": "missed-pickup", "booking_id": "SYNTHETIC-TEST",
+                "customer": "TEST — กดรับทราบเพื่อทดสอบ", "pickup_time": "--:--",
+                "route": "TEST → TEST", "driver_code": None, "provider_id": None,
+            }
+        from db import _get_pool
+        pool = _get_pool()
+        if pool is None:
+            return jsonify({"ok": False, "reason": "no db"}), 500
+
+        actions = []
+        with pool.connection() as conn:
+            open_rows = {r[0]: {"acked_at": r[1], "last_sent": r[2], "repeat_count": r[3]}
+                         for r in conn.execute(
+                             "SELECT alert_key, acked_at, last_sent, repeat_count "
+                             "FROM critical_alerts WHERE cleared_at IS NULL").fetchall()}
+            now = datetime.now(timezone.utc)
+
+            # State cleared itself (arrival / GPS resumed / booking gone)
+            for key in set(open_rows) - set(states):
+                actions.append({"key": key, "action": "cleared"})
+                if not dry_run:
+                    conn.execute("UPDATE critical_alerts SET cleared_at = now() "
+                                 "WHERE alert_key = %s", (key,))
+
+            for key, info in states.items():
+                row = open_rows.get(key)
+                if row and row["acked_at"]:
+                    actions.append({"key": key, "action": "silenced_by_ack"})
+                    continue
+                if row and (now - row["last_sent"]).total_seconds() < REPEAT_AFTER_S:
+                    actions.append({"key": key, "action": "too_soon"})
+                    continue
+                count = (row["repeat_count"] + 1) if row else 1
+                if dry_run:
+                    actions.append({"key": key, "action": "would_send", "n": count})
+                    continue
+                if _send_alert(key, info, count):
+                    if row:
+                        conn.execute(
+                            "UPDATE critical_alerts SET last_sent = now(), "
+                            "repeat_count = %s WHERE alert_key = %s", (count, key))
+                    else:
+                        conn.execute(
+                            "INSERT INTO critical_alerts (alert_key, alert_type, "
+                            "booking_id, driver_id) VALUES (%s, %s, %s, %s) "
+                            "ON CONFLICT (alert_key) DO UPDATE SET cleared_at = NULL, "
+                            "acked_at = NULL, acked_by = NULL, last_sent = now(), "
+                            "repeat_count = 1",
+                            (key, info["alert_type"], info["booking_id"],
+                             info.get("driver_code")))
+                    actions.append({"key": key, "action": "sent", "n": count})
+                else:
+                    actions.append({"key": key, "action": "send_failed"})
+        return jsonify({"ok": True, "dry_run": dry_run,
+                        "detected": len(states), "actions": actions}), 200
+    except Exception as e:
+        logger.error(f"[CRITICAL] cron error: {e}")
+        return jsonify({"ok": False, "reason": str(e)[:200]}), 500
+
+
+# ─────────────────────────────────────────────────────────────
+# Acknowledge (called by transfer-line-webhook on button tap)
+# ─────────────────────────────────────────────────────────────
+
+@critical_bp.route("/alerts/ack", methods=["POST"])
+def alerts_ack():
+    cron_secret = os.environ.get("CRON_SECRET", "")
+    if cron_secret and request.args.get("key", "") != cron_secret:
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    alert_key = (body.get("alert_key") or "").strip()
+    acked_by = (body.get("acked_by") or "team").strip()[:80]
+    if not alert_key:
+        return jsonify({"status": "error", "message": "no alert_key"}), 400
+    try:
+        from db import _get_pool
+        pool = _get_pool()
+        if pool is None:
+            return jsonify({"status": "error", "message": "no db"}), 500
+        with pool.connection() as conn:
+            row = conn.execute(
+                "SELECT acked_at, acked_by FROM critical_alerts WHERE alert_key = %s",
+                (alert_key,)).fetchone()
+            if row is None:
+                return jsonify({"status": "unknown"}), 200
+            if row[0] is not None:
+                return jsonify({"status": "already", "acked_by": row[1]}), 200
+            conn.execute(
+                "UPDATE critical_alerts SET acked_at = now(), acked_by = %s "
+                "WHERE alert_key = %s", (acked_by, alert_key))
+        logger.info(f"[CRITICAL] ACK {alert_key} by {acked_by}")
+        return jsonify({"status": "acked", "acked_by": acked_by}), 200
+    except Exception as e:
+        logger.error(f"[CRITICAL] ack error: {e}")
+        return jsonify({"status": "error", "message": str(e)[:150]}), 500
