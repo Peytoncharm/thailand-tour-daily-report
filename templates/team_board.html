@@ -54,6 +54,17 @@
   .tab.on { color:var(--text); border-color:#3a4468; background:#1a1f33;
     border-bottom-color:#1a1f33; font-weight:600; }
   #summary { margin:10px 0 14px; display:flex; gap:8px; flex-wrap:wrap; }
+  /* Legend v2 (12 Aug): collapsible, collapsed by default — same pattern
+     as the map board; explains the signal column + row accents */
+  #legend { margin:0 0 12px; font-size:12px; color:var(--muted); }
+  #legend summary { list-style:none; cursor:pointer; display:inline-block;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:6px 12px; color:var(--text); user-select:none; font-size:12px; }
+  #legend summary::-webkit-details-marker { display:none; }
+  #legend .lbody { margin-top:6px; background:var(--panel2);
+    border:1px solid var(--line); border-radius:10px; padding:10px 14px;
+    line-height:1.7; max-width:640px; }
+  #legend .lbody b { color:var(--text); }
   .sumbox { background:var(--panel2); border:1px solid var(--line);
     border-radius:10px; padding:8px 14px; font-size:12px; color:var(--muted); }
   .sumbox b { color:var(--text); font-size:16px; display:block; }
@@ -85,6 +96,18 @@
     <button class="tab" data-bu="all">ทั้งหมด</button>
   </div>
   <div id="summary"></div>
+  <details id="legend">
+    <summary>ℹ️ Legend / สัญลักษณ์</summary>
+    <div class="lbody">
+      <div><b>Signal column = driver's GPS (คนขับ):</b></div>
+      <div>🟢 Fresh &lt; 5 min · 🟡 5–20 min · 🔴 Silent &gt; 20 min DURING A JOB (ต้องจัดการ!)</div>
+      <div>⚪ No driver yet / driver has no tracker / off-duty (ปกติ)</div>
+      <div style="margin-top:6px"><b>Rows:</b></div>
+      <div>Red left edge — needs attention: missed pickup, red signal, no driver, or no coordinates</div>
+      <div>Faded row with ✓ — completed (arrived at pickup; partner jobs auto-complete at pickup time)</div>
+      <div>⚠ อาจพลาดลูกค้า — pickup time passed, NO arrival — possible missed customer (ด่วนสุด!)</div>
+    </div>
+  </details>
   <table>
     <thead><tr>
       <th data-k="pickup">เวลารับ <span class="arrow">↕</span></th>

@@ -25,9 +25,22 @@
     border-bottom: 1px solid #1d2233; }
   #topbar h1 { font-size: 15px; font-weight: 600; letter-spacing: .4px; }
   #topbar .sub { color: var(--muted); font-size: 12px; }
+  /* Legend v2 (12 Aug): 7+ symbol meanings now — collapsible, collapsed
+     by default to one button because map space matters */
   #legend { position: absolute; bottom: 14px; left: 14px; z-index: 1000;
+    font-size: 12px; color: var(--muted); }
+  #legend summary { list-style: none; cursor: pointer; display: inline-block;
     background: var(--panel2); border: 1px solid #1d2233; border-radius: 10px;
-    padding: 10px 14px; font-size: 12px; color: var(--muted); }
+    padding: 6px 12px; color: var(--text); user-select: none; }
+  #legend summary::-webkit-details-marker { display: none; }
+  #legend .lbody { margin-top: 6px; background: var(--panel2);
+    border: 1px solid #1d2233; border-radius: 10px; padding: 10px 14px;
+    max-width: 320px; max-height: 55vh; overflow-y: auto; line-height: 1.65; }
+  #legend h4 { color: var(--text); font-size: 12px; margin: 8px 0 4px; }
+  #legend h4:first-child { margin-top: 0; }
+  .lg { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+  .lg .sym { flex: none; width: 22px; height: 18px; display: flex;
+    justify-content: center; align-items: center; }
   .dotk { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
     margin-right: 6px; vertical-align: middle; }
   .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text);
@@ -83,11 +96,24 @@
     "/team/board?key=" + encodeURIComponent({{ key|tojson }}) +
     ({{ 'true' if demo else 'false' }} ? "&demo=1" : "");</script>
 </div>
-<div id="legend">
-  <div><span class="dotk" style="background:var(--green)"></span> สดใหม่ &lt; 5 นาที</div>
-  <div><span class="dotk" style="background:var(--amber)"></span> 5–20 นาที</div>
-  <div><span class="dotk" style="background:var(--red)"></span> เกิน 20 นาที / ขาดสัญญาณ</div>
-</div>
+<details id="legend">
+  <summary>ℹ️ Legend / สัญลักษณ์</summary>
+  <div class="lbody">
+    <h4>Round dots = Drivers (คนขับ)</h4>
+    <div class="lg"><span class="sym"><span class="dotk" style="background:var(--green);margin:0"></span></span> Fresh — last ping &lt; 5 min</div>
+    <div class="lg"><span class="sym"><span class="dotk" style="background:var(--amber);margin:0"></span></span> 5–20 min since last ping</div>
+    <div class="lg"><span class="sym"><span class="dotk" style="background:var(--red);margin:0"></span></span> Silent &gt; 20 min DURING A JOB (ต้องจัดการ!)</div>
+    <div class="lg"><span class="sym"><span class="dotk" style="background:var(--grey);margin:0"></span></span> Off-duty (ปกติ)</div>
+    <h4>Diamonds = Jobs at pickup point (งาน)</h4>
+    <div class="lg"><span class="sym"><span class="bpin" style="border-color:#4da3ff;background:#4da3ff33;width:9px;height:9px"></span></span> Solid — our job, GPS expected</div>
+    <div class="lg"><span class="sym"><span class="bpin" style="border-color:#4da3ff;background:transparent;width:9px;height:9px"></span></span> Hollow — partner-operated, no GPS (normal)</div>
+    <div class="lg"><span class="sym"><span class="bdone" style="width:14px;height:14px;line-height:11px;font-size:10px">✓</span></span> Faded ✓ — completed (arrived at pickup)</div>
+    <div class="lg"><span class="sym"><span class="bmissed" style="width:11px;height:11px"></span></span> Pulsing — pickup time passed, NO arrival — possible missed customer (ด่วนสุด!)</div>
+    <div class="lg"><span class="sym">🔵</span> Diamond colour: blue = Confirmed · grey = other status</div>
+    <h4>Panels</h4>
+    <div class="lg"><span class="sym">↗</span> Top-right panel — jobs without mappable coordinates</div>
+  </div>
+</details>
 <div id="stamp">—</div>
 <div id="filters">
   <button class="fbtn on" data-f="drivers">คนขับ</button>
