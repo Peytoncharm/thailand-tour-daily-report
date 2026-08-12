@@ -118,6 +118,10 @@ def _detect_states():
                 info["alert_type"] = "driver-silent-pre" if pre else "driver-silent"
                 info["silent_min"] = None if age is None else int(age // 60)
                 info["mins_to_pickup"] = int(-past_s // 60) if pre else None
+                # Never-started rung (12 Aug): zero pings ever, or nothing
+                # for 6h+, is "GPS not turned on before the job" — a
+                # different instruction to the team than "went quiet".
+                info["never_started"] = age is None or age > 6 * 3600
                 states[("presilent:" if pre else "silent:") + str(bid)] = info
     return states
 
@@ -140,22 +144,45 @@ def _driver_line(info):
     return f"{_thai_person(name)}" + (f" · 📞 {phone}" if phone else "")
 
 
-def _send_alert(alert_key, info, repeat_count):
+def _send_alert(alert_key, info, repeat_count, reescalation=None):
     if info["alert_type"] == "missed-pickup":
         header = "🔴 เลยเวลารับ — ยังไม่มีคนไปถึง (อาจพลาดลูกค้า!)"
-    elif info["alert_type"] == "driver-silent-pre":
-        mins = info.get("silent_min")
-        quiet = f"เงียบ {mins} นาที" if mins is not None else "ไม่มีสัญญาณเลย"
-        left = info.get("mins_to_pickup")
-        header = f"🔴 คนขับ{quiet} — อีก {left} นาทีถึงเวลารับ (ต้องจัดการก่อนสาย!)"
     else:
         mins = info.get("silent_min")
-        quiet = f"เงียบ {mins} นาที" if mins is not None else "ไม่มีสัญญาณเลย"
-        header = f"🔴 คนขับ{quiet} ระหว่างงาน (ต้องจัดการ!)"
+        if info.get("never_started"):
+            quiet = "ยังไม่เปิด GPS"
+        elif mins is not None:
+            quiet = f"เงียบ {mins} นาที"
+        else:
+            quiet = "ไม่มีสัญญาณเลย"
+        if info["alert_type"] == "driver-silent-pre":
+            left = info.get("mins_to_pickup")
+            header = (f"🔴 คนขับ{quiet}ก่อนงาน — อีก {left} นาทีถึงเวลารับ "
+                      f"(ต้องจัดการก่อนสาย!)")
+        else:
+            header = f"🔴 คนขับ{quiet} ระหว่างงาน (ต้องจัดการ!)"
     rep = f" · เตือนครั้งที่ {repeat_count}" if repeat_count > 1 else ""
-    message = {
+
+    body_extra = []
+    messages = []
+    if reescalation:
+        header = "‼️ เตือนอีกครั้ง — ยังไม่คลี่คลาย\n" + header
+        body_extra.append(
+            {"type": "text",
+             "text": (f"รับทราบครั้งก่อนโดย {reescalation.get('by', '-')} "
+                      f"แต่สถานะยังไม่คลี่คลายหลัง 30 นาที — ต้องกดรับทราบใหม่"),
+             "size": "xs", "color": "#D02020", "wrap": True, "margin": "md"})
+        # Mention-all first message (LINE textV2). If the OA/plan rejects
+        # textV2, the fallback below re-sends the flex alone.
+        messages.append({
+            "type": "textV2",
+            "text": "{everyone} ‼️ เตือนอีกครั้ง — ยังไม่คลี่คลาย",
+            "substitution": {"everyone": {"type": "mention",
+                                          "mentionee": {"type": "all"}}},
+        })
+    flex = {
         "type": "flex",
-        "altText": f"{header} — {info['customer']} {info['pickup_time']}",
+        "altText": f"{header.splitlines()[-1]} — {info['customer']} {info['pickup_time']}"[:390],
         "contents": {
             "type": "bubble",
             "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
@@ -165,6 +192,7 @@ def _send_alert(alert_key, info, repeat_count):
                  "size": "sm", "wrap": True},
                 {"type": "text", "text": f"เส้นทาง: {info['route']}", "size": "sm", "wrap": True},
                 {"type": "text", "text": f"คนขับ: {_driver_line(info)}", "size": "sm", "wrap": True},
+            ] + body_extra + [
                 {"type": "text",
                  "text": f"ระบบจะเตือนซ้ำทุก 10 นาทีจนกว่าจะมีคนกดรับทราบ{rep}",
                  "size": "xs", "color": "#999999", "wrap": True, "margin": "md"},
@@ -177,17 +205,28 @@ def _send_alert(alert_key, info, repeat_count):
             ]},
         },
     }
-    try:
-        resp = requests.post(
+    messages.append(flex)
+
+    def _push(msgs):
+        return requests.post(
             "https://api.line.me/v2/bot/message/push",
             headers={"Authorization": f"Bearer {TRANSFER_LINE_TOKEN}",
                      "Content-Type": "application/json"},
-            json={"to": TEAM_LINE_GROUP_ID, "messages": [message]},
+            json={"to": TEAM_LINE_GROUP_ID, "messages": msgs},
             timeout=10,
         )
+    try:
+        resp = _push(messages)
+        if resp.status_code != 200 and len(messages) > 1:
+            # textV2 mention-all rejected → deliver the flex alone rather
+            # than losing the re-escalation entirely
+            logger.warning(f"[CRITICAL] {alert_key} mention-all rejected "
+                           f"({resp.status_code} {resp.text[:120]}) — flex-only fallback")
+            resp = _push([flex])
         ok = resp.status_code == 200
-        logger.info(f"[CRITICAL] {alert_key} send #{repeat_count}: {resp.status_code}"
-                    + ("" if ok else f" {resp.text[:150]}"))
+        logger.info(f"[CRITICAL] {alert_key} send #{repeat_count}"
+                    + (" (re-escalation)" if reescalation else "")
+                    + f": {resp.status_code}" + ("" if ok else f" {resp.text[:150]}"))
         return ok
     except Exception as e:
         logger.error(f"[CRITICAL] {alert_key} send error: {e}")
@@ -217,9 +256,12 @@ def cron_critical_alerts():
 
         actions = []
         with pool.connection() as conn:
-            open_rows = {r[0]: {"acked_at": r[1], "last_sent": r[2], "repeat_count": r[3]}
+            open_rows = {r[0]: {"acked_at": r[1], "last_sent": r[2],
+                                "repeat_count": r[3], "acked_by": r[4],
+                                "reescalations": r[5]}
                          for r in conn.execute(
-                             "SELECT alert_key, acked_at, last_sent, repeat_count "
+                             "SELECT alert_key, acked_at, last_sent, repeat_count, "
+                             "acked_by, reescalations "
                              "FROM critical_alerts WHERE cleared_at IS NULL").fetchall()}
             now = datetime.now(timezone.utc)
 
@@ -233,7 +275,31 @@ def cron_critical_alerts():
             for key, info in states.items():
                 row = open_rows.get(key)
                 if row and row["acked_at"]:
-                    actions.append({"key": key, "action": "silenced_by_ack"})
+                    # Re-escalation rung (12 Aug): "acknowledged" buys 30
+                    # minutes of ownership. State still dangerous after
+                    # that → re-open with mention-all, fresh ack required,
+                    # 10-min cycle resumes. Every re-open is counted.
+                    ack_age = (now - row["acked_at"]).total_seconds()
+                    if ack_age < 1800:
+                        actions.append({"key": key, "action": "silenced_by_ack"})
+                        continue
+                    n_re = (row["reescalations"] or 0) + 1
+                    if dry_run:
+                        actions.append({"key": key, "action": "would_reescalate",
+                                        "n_re": n_re})
+                        continue
+                    if _send_alert(key, info, 1,
+                                   reescalation={"by": row["acked_by"] or "-"}):
+                        conn.execute(
+                            "UPDATE critical_alerts SET acked_at = NULL, "
+                            "acked_by = NULL, last_sent = now(), repeat_count = 1, "
+                            "reescalations = %s WHERE alert_key = %s", (n_re, key))
+                        logger.warning(f"[CRITICAL] RE-ESCALATED {key} "
+                                       f"(#{n_re}, prior ack by {row['acked_by']})")
+                        actions.append({"key": key, "action": "reescalated",
+                                        "n_re": n_re})
+                    else:
+                        actions.append({"key": key, "action": "reescalate_send_failed"})
                     continue
                 if row and (now - row["last_sent"]).total_seconds() < REPEAT_AFTER_S:
                     actions.append({"key": key, "action": "too_soon"})

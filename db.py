@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS critical_alerts (
   acked_by    text,
   cleared_at  timestamptz
 );
+ALTER TABLE critical_alerts ADD COLUMN IF NOT EXISTS reescalations int NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS alert_log (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
