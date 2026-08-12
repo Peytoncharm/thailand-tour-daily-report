@@ -47,6 +47,13 @@ REPEAT_AFTER_S = 540           # re-send if last send ≥9 min ago (10-min cron)
 GRACE_S = 600                  # same 10-min pickup grace as the dashboard
 WINDOW_BEFORE_S = 3600         # silent check from T-60 min
 WINDOW_AFTER_S = 90 * 60       # …until pickup+90 (missed-pickup owns later)
+NEVER_STARTED_S = 6 * 3600     # no ping for 6h+ = "GPS not turned on"
+AMBER_FIXED_LEAD_S = 7200      # no-GPS amber pre-warning from T-120…
+AMBER_BUFFER_S = 1800          # …or (route drive time + 30 min) when known
+
+
+def _fmt_mins(m):
+    return f"{m // 60} ชม. {m % 60} นาที" if m >= 90 else f"{m} นาที"
 
 
 def _thai_person(name):
@@ -74,12 +81,27 @@ def _detect_states():
         rows = conn.execute(
             "SELECT booking_id, pickup_ts, driver_id, provider_id, "
             "payload->>'Name', payload->>'Last_Name', "
-            "payload->>'Pickup_Location', payload->>'Dropoff_Location' "
+            "payload->>'Pickup_Location', payload->>'Dropoff_Location', "
+            "payload->>'Route_Key' "
             "FROM booking_cache WHERE tour_date = %s "
             "AND lower(coalesce(type_of_package,'')) = 'private transfer' "
             "ORDER BY pickup_ts NULLS LAST LIMIT 200",
             (today,),
         ).fetchall()
+        # Distance-aware amber lead: where the ETA engine already knows a
+        # route's real drive time, the no-GPS pre-warning starts at
+        # (drive + 30 min) before pickup instead of the fixed T-120
+        route_keys = list({r[8] for r in rows if r[8]})
+        drive_by_route = {}
+        if route_keys:
+            for rk, avg_s in conn.execute(
+                    "SELECT route_key, AVG(COALESCE(actual_sec, predicted_sec)) "
+                    "FROM eta_history WHERE route_key = ANY(%s) "
+                    "AND COALESCE(actual_sec, predicted_sec) IS NOT NULL "
+                    "AND computed_at > now() - interval '60 days' "
+                    "GROUP BY route_key", (route_keys,)).fetchall():
+                if avg_s:
+                    drive_by_route[rk] = float(avg_s)
         # Same arrival detection the dashboard uses (Step-2 completion)
         arrived_ids = {r[0] for r in conn.execute(
             "SELECT DISTINCT booking_id FROM eta_history "
@@ -89,7 +111,7 @@ def _detect_states():
             "SELECT driver_id, ts FROM driver_latest").fetchall()}
 
     for (bid, pickup_ts, drv_code, provider_id,
-         name, last_name, pickup_loc, dropoff_loc) in rows:
+         name, last_name, pickup_loc, dropoff_loc, route_key) in rows:
         if bid in arrived_ids or pickup_ts is None:
             continue
         info = {
@@ -111,17 +133,34 @@ def _detect_states():
         # a fresh silence alert after the pickup time passes — the ladder
         # re-escalates on each state transition (presilent → silent →
         # missed), never across one.
-        if drv_code and -WINDOW_BEFORE_S <= past_s <= WINDOW_AFTER_S:
-            age = ages.get((drv_code or "").upper())
+        if not drv_code:
+            continue
+        age = ages.get((drv_code or "").upper())
+        # Never-started rung (12 Aug): zero pings ever, or nothing for
+        # 6h+, is "GPS not turned on before the job" — a different
+        # instruction to the team than "went quiet".
+        never_started = age is None or age > NEVER_STARTED_S
+
+        # Amber pre-warning (T-amber_lead .. T-60), no-GPS case only:
+        # SINGLE alert, no button, no repeat — the red ack-repeat card
+        # takes over when the booking crosses into the T-60 window.
+        drive_s = drive_by_route.get(route_key) if route_key else None
+        amber_lead = (drive_s + AMBER_BUFFER_S) if drive_s else AMBER_FIXED_LEAD_S
+        if never_started and -amber_lead <= past_s < -WINDOW_BEFORE_S:
+            info["alert_type"] = "gps-not-started-amber"
+            info["never_started"] = True
+            info["mins_to_pickup"] = int(-past_s // 60)
+            info["drive_min"] = int(drive_s // 60) if drive_s else None
+            states[f"pregps:{bid}"] = info
+            continue
+
+        if -WINDOW_BEFORE_S <= past_s <= WINDOW_AFTER_S:
             if age is None or age > SILENT_AFTER_S:
                 pre = past_s < 0
                 info["alert_type"] = "driver-silent-pre" if pre else "driver-silent"
                 info["silent_min"] = None if age is None else int(age // 60)
                 info["mins_to_pickup"] = int(-past_s // 60) if pre else None
-                # Never-started rung (12 Aug): zero pings ever, or nothing
-                # for 6h+, is "GPS not turned on before the job" — a
-                # different instruction to the team than "went quiet".
-                info["never_started"] = age is None or age > 6 * 3600
+                info["never_started"] = never_started
                 states[("presilent:" if pre else "silent:") + str(bid)] = info
     return states
 
@@ -145,7 +184,11 @@ def _driver_line(info):
 
 
 def _send_alert(alert_key, info, repeat_count, reescalation=None):
-    if info["alert_type"] == "missed-pickup":
+    amber = info["alert_type"] == "gps-not-started-amber"
+    if amber:
+        left = _fmt_mins(info.get("mins_to_pickup") or 0)
+        header = f"🟠 ยังไม่เปิด GPS ก่อนงาน — อีก {left}ถึงเวลารับ"
+    elif info["alert_type"] == "missed-pickup":
         header = "🔴 เลยเวลารับ — ยังไม่มีคนไปถึง (อาจพลาดลูกค้า!)"
     else:
         mins = info.get("silent_min")
@@ -180,30 +223,39 @@ def _send_alert(alert_key, info, repeat_count, reescalation=None):
             "substitution": {"everyone": {"type": "mention",
                                           "mentionee": {"type": "all"}}},
         })
+    accent = "#B45309" if amber else "#D02020"
+    if amber:
+        drive_note = (f"เส้นทางนี้ใช้เวลาขับ ~{_fmt_mins(info['drive_min'])} · "
+                      if info.get("drive_min") else "")
+        note = (drive_note + "เตือนครั้งเดียว — ถ้ายังไม่เปิด GPS "
+                "จะเตือนแดง (ต้องกดรับทราบ) ที่ 60 นาทีก่อนงาน")
+    else:
+        note = f"ระบบจะเตือนซ้ำทุก 10 นาทีจนกว่าจะมีคนกดรับทราบ{rep}"
+    bubble = {
+        "type": "bubble",
+        "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+            {"type": "text", "text": header, "weight": "bold", "size": "md",
+             "color": accent, "wrap": True},
+            {"type": "text", "text": f"ลูกค้า: {info['customer']} · Pickup {info['pickup_time']}",
+             "size": "sm", "wrap": True},
+            {"type": "text", "text": f"เส้นทาง: {info['route']}", "size": "sm", "wrap": True},
+            {"type": "text", "text": f"คนขับ: {_driver_line(info)}", "size": "sm", "wrap": True},
+        ] + body_extra + [
+            {"type": "text", "text": note,
+             "size": "xs", "color": "#999999", "wrap": True, "margin": "md"},
+        ]},
+    }
+    if not amber:
+        bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
+            {"type": "button", "style": "primary", "color": accent,
+             "action": {"type": "postback", "label": "รับทราบ — กำลังจัดการ",
+                        "data": f"action=ack_critical&key={alert_key}",
+                        "displayText": "รับทราบ — กำลังจัดการ"}},
+        ]}
     flex = {
         "type": "flex",
         "altText": f"{header.splitlines()[-1]} — {info['customer']} {info['pickup_time']}"[:390],
-        "contents": {
-            "type": "bubble",
-            "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                {"type": "text", "text": header, "weight": "bold", "size": "md",
-                 "color": "#D02020", "wrap": True},
-                {"type": "text", "text": f"ลูกค้า: {info['customer']} · Pickup {info['pickup_time']}",
-                 "size": "sm", "wrap": True},
-                {"type": "text", "text": f"เส้นทาง: {info['route']}", "size": "sm", "wrap": True},
-                {"type": "text", "text": f"คนขับ: {_driver_line(info)}", "size": "sm", "wrap": True},
-            ] + body_extra + [
-                {"type": "text",
-                 "text": f"ระบบจะเตือนซ้ำทุก 10 นาทีจนกว่าจะมีคนกดรับทราบ{rep}",
-                 "size": "xs", "color": "#999999", "wrap": True, "margin": "md"},
-            ]},
-            "footer": {"type": "box", "layout": "vertical", "contents": [
-                {"type": "button", "style": "primary", "color": "#D02020",
-                 "action": {"type": "postback", "label": "รับทราบ — กำลังจัดการ",
-                            "data": f"action=ack_critical&key={alert_key}",
-                            "displayText": "รับทราบ — กำลังจัดการ"}},
-            ]},
-        },
+        "contents": bubble,
     }
     messages.append(flex)
 
@@ -274,6 +326,12 @@ def cron_critical_alerts():
 
             for key, info in states.items():
                 row = open_rows.get(key)
+                # Amber no-GPS pre-warning is SINGLE-SHOT: one card, no
+                # repeat, no re-escalation — the red T-60 card owns the
+                # follow-through.
+                if row and info["alert_type"] == "gps-not-started-amber":
+                    actions.append({"key": key, "action": "amber_single_sent"})
+                    continue
                 if row and row["acked_at"]:
                     # Re-escalation rung (12 Aug): "acknowledged" buys 30
                     # minutes of ownership. State still dangerous after
