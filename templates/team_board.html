@@ -110,13 +110,13 @@
   </details>
   <table>
     <thead><tr>
-      <th data-k="pickup">เวลารับ <span class="arrow">↕</span></th>
-      <th data-k="name">ลูกค้า <span class="arrow">↕</span></th>
-      <th data-k="route">เส้นทาง</th>
-      <th data-k="type">ประเภท <span class="arrow">↕</span></th>
-      <th data-k="status">สถานะ <span class="arrow">↕</span></th>
-      <th data-k="driver">คนขับ <span class="arrow">↕</span></th>
-      <th data-k="signal">สัญญาณ</th>
+      <th data-k="pickup">Pickup <span class="arrow">↕</span></th>
+      <th data-k="name">Customer <span class="arrow">↕</span></th>
+      <th data-k="route">Route</th>
+      <th data-k="type">Type <span class="arrow">↕</span></th>
+      <th data-k="status">Status <span class="arrow">↕</span></th>
+      <th data-k="driver">Driver <span class="arrow">↕</span></th>
+      <th data-k="signal">Signal</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -235,15 +235,15 @@
       ? '<div class="m" style="color:var(--red);font-weight:600">⚠ อาจพลาดลูกค้า</div>' : '';
     const doneTag = lc === "done" ? ' <span class="m">✓</span>' : '';
     return `<tr class="${cls}">
-      <td data-l="เวลารับ"><b>${bk.pickup_time||"–"}</b>${doneTag}
+      <td data-l="Pickup"><b>${bk.pickup_time||"–"}</b>${doneTag}
         <div class="m">${bk.tour_date||""}</div>${missedTag}</td>
-      <td data-l="ลูกค้า">${customerCell(bk)}</td>
-      <td data-l="เส้นทาง">${bk.pickup_location||"–"} → ${bk.dropoff_location||"–"}
-        ${noCoords ? '<div class="m">⚠ ไม่มีพิกัด</div>' : ''}</td>
-      <td data-l="ประเภท">${bk.type||"–"}</td>
-      <td data-l="สถานะ"><span class="pill ${ (bk.status||'').toLowerCase()==='confirmed'?'ok':'' }">${bk.status||"ไม่มีสถานะ"}</span></td>
-      <td data-l="คนขับ">${driverCell(bk)}</td>
-      <td data-l="สัญญาณ"><span class="dot" style="background:${s.c}"></span>
+      <td data-l="Customer">${customerCell(bk)}</td>
+      <td data-l="Route">${bk.pickup_location||"–"} → ${bk.dropoff_location||"–"}
+        ${noCoords ? '<div class="m">⚠ no coordinates</div>' : ''}</td>
+      <td data-l="Type">${bk.type||"–"}</td>
+      <td data-l="Status"><span class="pill ${ (bk.status||'').toLowerCase()==='confirmed'?'ok':'' }">${bk.status||"no status"}</span></td>
+      <td data-l="Driver">${driverCell(bk)}</td>
+      <td data-l="Signal"><span class="dot" style="background:${s.c}"></span>
         <span class="m">${s.label}</span></td>
     </tr>`;
   }

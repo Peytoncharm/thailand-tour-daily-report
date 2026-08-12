@@ -190,10 +190,10 @@
   }
 
   function ageLabel(age_s) {
-    if (age_s == null) return "ไม่ทราบ";
-    if (age_s < 60) return age_s + " วิที่แล้ว";
-    if (age_s < 3600) return Math.round(age_s / 60) + " นาทีที่แล้ว";
-    return Math.round(age_s / 3600) + " ชม.ที่แล้ว";
+    if (age_s == null) return "unknown";
+    if (age_s < 60) return age_s + "s ago";
+    if (age_s < 3600) return Math.round(age_s / 60) + " min ago";
+    return Math.round(age_s / 3600) + " h ago";
   }
 
   async function refresh() {
@@ -208,9 +208,9 @@
         seen.add(drv.code);
         const col = colourFor(drv.age_s, d.thresholds).trim();
         const html = `<div class="pop"><b>${drv.name || drv.code}</b>
-          <div class="m">รหัส: ${drv.code}<br>
-          เห็นล่าสุด: ${drv.last_seen_ict || "-"} (${ageLabel(drv.age_s)})<br>
-          แบตเตอรี่: ${drv.batt != null ? drv.batt + "%" : "-"}${contactHtml("โทร", drv.phone)}</div></div>`;
+          <div class="m">Code: ${drv.code}<br>
+          Last seen: ${drv.last_seen_ict || "-"} (${ageLabel(drv.age_s)})<br>
+          Battery: ${drv.batt != null ? drv.batt + "%" : "-"}${contactHtml("Call", drv.phone)}</div></div>`;
         if (markers.has(drv.code)) {
           const m = markers.get(drv.code);
           m.setLatLng([drv.lat, drv.lng]);
@@ -259,15 +259,15 @@
           pinHtml = `<div class="bpin" style="border-color:${col};background:${fill};${op}"></div>`;
           size = 14;
         }
-        const lifeline = done ? '<br>✓ เสร็จแล้ว — ถึงจุดรับแล้ว'
-          : missed ? '<br>⚠ เลยเวลารับแล้ว — ยังไม่พบการมาถึง (อาจพลาดลูกค้า)'
-          : partnerPast ? '<br>⏱ เลยเวลารับแล้ว (partner-operated)' : '';
-        const html = `<div class="pop"><b>${bk.name || "(ไม่มีชื่อ)"}</b>
-          <div class="m">${bk.type || "-"} · ${bk.status || "ไม่มีสถานะ"}<br>
+        const lifeline = done ? '<br>✓ Completed — arrived at pickup'
+          : missed ? '<br>⚠ Pickup time passed — no arrival detected (อาจพลาดลูกค้า!)'
+          : partnerPast ? '<br>⏱ Past pickup time (partner-operated)' : '';
+        const html = `<div class="pop"><b>${bk.name || "(no name)"}</b>
+          <div class="m">${bk.type || "-"} · ${bk.status || "no status"}<br>
           ${bk.tour_date || ""} ⏰ ${bk.pickup_time || "-"}<br>
-          รับที่: ${bk.pickup_location || "-"}<br>
-          คนขับ: ${bk.driver || "ยังไม่มี"} · พิกัด: ${bk.precision || "-"}
-          ${contactHtml("ลูกค้า", bk.customer_phone)}${contactHtml("คนขับ", bk.driver_phone)}
+          Pickup: ${bk.pickup_location || "-"}<br>
+          Driver: ${bk.driver || "none yet"} · Precision: ${bk.precision || "-"}
+          ${contactHtml("Customer", bk.customer_phone)}${contactHtml("Driver", bk.driver_phone)}
           ${isPartner ? '<br>🤝 partner-operated — no GPS expected' : ''}${lifeline}</div></div>`;
         const icon = L.divIcon({ className: "", html: pinHtml,
           iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
@@ -289,9 +289,9 @@
       if (nc.length) {
         ncBox.style.display = "block";
         ncList.innerHTML = nc.map(bk =>
-          `<div class="row">${bk.name || "(ไม่มีชื่อ)"}
+          `<div class="row">${bk.name || "(no name)"}
            <div class="m">${bk.tour_date || ""} ⏰ ${bk.pickup_time || "-"} · ${bk.status || "-"}<br>
-           ${bk.pickup_location || "(ไม่มีที่รับ)"}</div></div>`).join("");
+           ${bk.pickup_location || "(no pickup location)"}</div></div>`).join("");
       } else {
         ncBox.style.display = "none";
       }
@@ -303,7 +303,7 @@
       document.getElementById("stamp").textContent =
         "Updated " + new Date().toLocaleTimeString("th-TH") + " · refreshes every 30s";
     } catch (e) {
-      document.getElementById("count").textContent = "⚠ โหลดไม่สำเร็จ";
+      document.getElementById("count").textContent = "⚠ Failed to load";
     }
   }
 
