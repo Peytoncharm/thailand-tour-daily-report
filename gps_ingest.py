@@ -372,6 +372,78 @@ def gps_ingest(secret):
     return "", 200
 
 
+_VERIFY_PAGE = """<!doctype html>
+<html lang="th"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPS Install Verify — {code}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  body {{ margin:0; font-family: system-ui, sans-serif; }}
+  #banner {{ padding:14px 16px; color:#fff; font-size:18px; font-weight:600; }}
+  .wait {{ background:#b45309; }} .ok {{ background:#15803d; }} .stale {{ background:#b91c1c; }}
+  #meta {{ padding:10px 16px; font-size:14px; color:#333; line-height:1.6; }}
+  #map {{ height:60vh; }}
+</style></head><body>
+<div id="banner" class="wait">รอสัญญาณจากมือถือคนขับ…</div>
+<div id="meta">คนขับ: <b>{name}</b> · รหัส: <b>{code}</b><br>
+เปิดสวิตช์ในแอป Traccar Client แล้วรอ ~1 นาที หน้านี้รีเฟรชเอง</div>
+<div id="map"></div>
+<script>
+const map = L.map('map').setView([12.04, 102.32], 10);
+L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',
+            {{maxZoom: 19}}).addTo(map);
+let marker = null, circle = null, centered = false;
+async function poll() {{
+  try {{
+    const r = await fetch('/gps/status/{code}?key={key}');
+    const d = await r.json();
+    const banner = document.getElementById('banner');
+    if (d.tracking && d.last_point) {{
+      const ageSec = (Date.now() - Date.parse(d.last_seen_utc)) / 1000;
+      const p = d.last_point;
+      if (!marker) {{ marker = L.marker([p.lat, p.lng]).addTo(map); }}
+      else marker.setLatLng([p.lat, p.lng]);
+      if (circle) map.removeLayer(circle);
+      if (p.accuracy) circle = L.circle([p.lat, p.lng],
+          {{radius: p.accuracy, color:'#2563eb', fillOpacity:0.1}}).addTo(map);
+      if (!centered) {{ map.setView([p.lat, p.lng], 16); centered = true; }}
+      const fresh = ageSec < 180;
+      banner.className = fresh ? 'ok' : 'stale';
+      banner.textContent = fresh
+        ? '\\u2705 \\u0e40\\u0e2b\\u0e47\\u0e19\\u0e15\\u0e33\\u0e41\\u0e2b\\u0e19\\u0e48\\u0e07\\u0e41\\u0e25\\u0e49\\u0e27 \\u2014 \\u0e15\\u0e34\\u0e14\\u0e15\\u0e31\\u0e49\\u0e07\\u0e2a\\u0e33\\u0e40\\u0e23\\u0e47\\u0e08 (\\u0e2d\\u0e31\\u0e1b\\u0e40\\u0e14\\u0e15 ' + Math.round(ageSec) + ' \\u0e27\\u0e34\\u0e19\\u0e32\\u0e17\\u0e35\\u0e17\\u0e35\\u0e48\\u0e41\\u0e25\\u0e49\\u0e27)'
+        : '\\u26a0\\ufe0f \\u0e2a\\u0e31\\u0e0d\\u0e0d\\u0e32\\u0e13\\u0e40\\u0e01\\u0e48\\u0e32 ' + Math.round(ageSec/60) + ' \\u0e19\\u0e32\\u0e17\\u0e35 \\u2014 \\u0e43\\u0e2b\\u0e49\\u0e04\\u0e19\\u0e02\\u0e31\\u0e1a\\u0e40\\u0e0a\\u0e47\\u0e04\\u0e2a\\u0e27\\u0e34\\u0e15\\u0e0a\\u0e4c\\u0e41\\u0e2d\\u0e1b';
+      document.getElementById('meta').innerHTML =
+        '\\u0e04\\u0e19\\u0e02\\u0e31\\u0e1a: <b>{name}</b> \\u00b7 \\u0e23\\u0e2b\\u0e31\\u0e2a: <b>{code}</b>'
+        + ' \\u00b7 \\u0e41\\u0e1a\\u0e15: <b>' + (d.batt !== null ? d.batt + '%' : '-') + '</b>'
+        + ' \\u00b7 \\u0e04\\u0e27\\u0e32\\u0e21\\u0e41\\u0e21\\u0e48\\u0e19: <b>' + (p.accuracy ? Math.round(p.accuracy) + ' \\u0e21.' : '-') + '</b>'
+        + ' \\u00b7 \\u0e08\\u0e38\\u0e14\\u0e2a\\u0e30\\u0e2a\\u0e21: <b>' + d.points_buffered + '</b>';
+    }}
+  }} catch (e) {{ console.log(e); }}
+  setTimeout(poll, 5000);
+}}
+poll();
+</script></body></html>"""
+
+
+@gps_bp.route("/gps/verify/<code>", methods=["GET"])
+def gps_verify(code):
+    """Install-verification page (self-testing rollout, 12 Aug): the team
+    opens this while a driver finishes the Traccar install; the moment a
+    background ping lands, the dot appears and the banner goes green. No
+    install counts as done until this page has shown the dot.
+    Auth: CRON_SECRET, same as /gps/status."""
+    cron_secret = os.environ.get("CRON_SECRET", "")
+    if cron_secret and request.args.get("key", "") != cron_secret:
+        return "unauthorized", 401
+    code = (code or "").strip().upper()
+    entry_meta = _lookup_code(code)
+    if not entry_meta:
+        return f"unknown provider code: {code}", 404
+    return _VERIFY_PAGE.format(code=code, name=entry_meta["name"],
+                               key=cron_secret), 200
+
+
 @gps_bp.route("/gps/status/<code>", methods=["GET"])
 def gps_status(code):
     """Ops debug: last ping for a provider code. Protected by CRON_SECRET
