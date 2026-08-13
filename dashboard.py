@@ -189,22 +189,11 @@ def _demo_payload():
             "driver_phone": None if drv is None else f"08x-xxx-{3000 + i:04d}",
             "arrived": arrived,
             "pickup_passed": past,
-            # Demo feasibility: deterministic spread so all four chip
-            # styles are visible on the demo board
-            "feas": (None if past or drv is None else
-                     {"status": "infeasible", "slack_min": -65, "eta": f"{hh+1:02d}:05",
-                      "band_min": 60, "ferry_involved": True,
-                      "detail": "pier ~45m → ferry 06:30 +q~15m +cross 30m +drive ~40m"}
-                     if i % 7 == 0 else
-                     {"status": "at_risk", "slack_min": 12, "eta": f"{hh:02d}:03",
-                      "band_min": 30, "ferry_involved": False,
-                      "detail": "drive ~48m (geometric)"}
-                     if i % 5 == 0 else
-                     {"status": "unknown", "detail": "no GPS to judge"}
-                     if i % 3 == 0 else
-                     {"status": "ok", "slack_min": 190, "eta": f"{max(hh-3,5):02d}:40",
-                      "band_min": 30, "ferry_involved": False,
-                      "detail": "drive ~25m (geometric)"}),
+            # Demo feasibility: cycle the four chip styles over PRIVATE
+            # future rows (Join = partner → chip correctly suppressed),
+            # so every style is always visible on the demo board
+            "feas": (None if past or drv is None or typ != "Private Transfer" else
+                     _demo_feas_cycle(hh)),
         })
     # honest no-coords entries
     for i, txt in enumerate(["Sunset Villa (address unclear)",
@@ -232,6 +221,24 @@ def team_dashboard():
     return render_template("team_dashboard.html",
                            key=request.args.get("key", ""),
                            demo=(request.args.get("demo") == "1"))
+
+
+_demo_feas_n = {"i": 0}
+
+
+def _demo_feas_cycle(hh):
+    n = _demo_feas_n["i"] = _demo_feas_n["i"] + 1
+    return [
+        {"status": "infeasible", "slack_min": -65, "eta": f"{(hh+1) % 24:02d}:05",
+         "band_min": 60, "ferry_involved": True,
+         "detail": "pier ~45m → ferry 06:30 +q~15m +cross 30m +drive ~40m"},
+        {"status": "at_risk", "slack_min": 12, "eta": f"{hh:02d}:03",
+         "band_min": 60, "ferry_involved": True,
+         "detail": "pier ~20m → ferry +q~15m +cross 30m +drive ~25m"},
+        {"status": "unknown", "detail": "no GPS to judge"},
+        {"status": "ok", "slack_min": 190, "eta": f"{max(hh-3,5):02d}:40",
+         "band_min": 30, "ferry_involved": False, "detail": "drive ~25m (geometric)"},
+    ][n % 4]
 
 
 def _booking_feas(bid, pickup_ts, lat, lng, p_zone, driver_id, arrived_ids, dl):
