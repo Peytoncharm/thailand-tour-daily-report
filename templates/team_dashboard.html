@@ -68,6 +68,18 @@
   .bmissed { border-radius: 4px; border: 3px solid #f06060; width: 18px;
     height: 18px; transform: rotate(45deg); background: #f0606044;
     animation: missedpulse 1.2s ease-in-out infinite; }
+  /* Feasibility overlays (13 Aug): a property of the JOB, independent of
+     the driver dot. Static red-! = about to be missed; pulsing = missed. */
+  .binfeasible { border-radius: 4px; border: 2px solid var(--red); width: 18px;
+    height: 18px; transform: rotate(45deg); background: var(--red);
+    position: relative; }
+  .binfeasible::after { content: "!"; position: absolute; inset: 0;
+    transform: rotate(-45deg); color: #fff; font-weight: 800; font-size: 12px;
+    display: flex; align-items: center; justify-content: center; }
+  .riskwrap { position: relative; width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center; }
+  .riskring { position: absolute; width: 26px; height: 26px; border-radius: 6px;
+    border: 2px dashed var(--amber); transform: rotate(45deg); }
   @keyframes missedpulse {
     0%, 100% { box-shadow: 0 0 4px 1px rgba(240,96,96,.5); }
     50%      { box-shadow: 0 0 14px 5px rgba(240,96,96,.9); }
@@ -110,6 +122,8 @@
     <div class="lg"><span class="sym"><span class="bdone" style="width:14px;height:14px;line-height:11px;font-size:10px">✓</span></span> Faded ✓ — completed (arrived at pickup)</div>
     <div class="lg"><span class="sym"><span class="bmissed" style="width:11px;height:11px"></span></span> Pulsing — pickup time passed, NO arrival — possible missed customer (ด่วนสุด!)</div>
     <div class="lg"><span class="sym">🔵</span> Diamond colour: blue = Confirmed · grey = other status</div>
+    <div class="lg"><span class="sym"><span class="binfeasible" style="width:11px;height:11px"></span></span> Red ! — driver can't reach pickup in time (ETA vs pickup, ferry-aware)</div>
+    <div class="lg"><span class="sym"><span style="width:14px;height:14px;border:2px dashed var(--amber);border-radius:4px;transform:rotate(45deg);display:inline-block"></span></span> Amber ring — tight: slack under 30 min (60 with a ferry)</div>
     <h4>Panels</h4>
     <div class="lg"><span class="sym">↗</span> Top-right panel — jobs without mappable coordinates</div>
   </div>
@@ -249,26 +263,45 @@
         const missed = !done && !!bk.pickup_passed && !isPartner;
         const partnerPast = !done && !!bk.pickup_passed && isPartner;
         const fill = isPartner ? "transparent" : `${col}33`;
+        const feas = bk.feas || null;
         let pinHtml, size;
         if (done) {
           pinHtml = `<div class="bdone">✓</div>`; size = 16;
         } else if (missed) {
           pinHtml = `<div class="bmissed"></div>`; size = 18;
+        } else if (feas && feas.status === "infeasible" && !isPartner) {
+          pinHtml = `<div class="binfeasible"></div>`; size = 18;
         } else {
           const op = partnerPast ? "opacity:.45;" : "";
-          pinHtml = `<div class="bpin" style="border-color:${col};background:${fill};${op}"></div>`;
-          size = 14;
+          const pin = `<div class="bpin" style="border-color:${col};background:${fill};${op}"></div>`;
+          if (feas && feas.status === "at_risk" && !isPartner) {
+            pinHtml = `<div class="riskwrap"><div class="riskring"></div>${pin}</div>`;
+            size = 28;
+          } else {
+            pinHtml = pin; size = 14;
+          }
         }
         const lifeline = done ? '<br>✓ Completed — arrived at pickup'
           : missed ? '<br>⚠ Pickup time passed — no arrival detected (อาจพลาดลูกค้า!)'
           : partnerPast ? '<br>⏱ Past pickup time (partner-operated)' : '';
+        let feasLine = '';
+        if (feas && !isPartner && !done && !missed) {
+          if (feas.status === "infeasible")
+            feasLine = `<br><span style="color:var(--red)">⏱ Won't make it — ETA ~${feas.eta} (${feas.slack_min}m)</span><br><span style="opacity:.75">${feas.detail || ''}</span>`;
+          else if (feas.status === "at_risk")
+            feasLine = `<br><span style="color:var(--amber)">⏱ Tight — ETA ~${feas.eta} (+${feas.slack_min}m, band ${feas.band_min}m)</span><br><span style="opacity:.75">${feas.detail || ''}</span>`;
+          else if (feas.status === "ok")
+            feasLine = `<br>⏱ On track — ETA ~${feas.eta} (+${feas.slack_min}m)`;
+          else
+            feasLine = `<br><span style="opacity:.6">⏱ ${feas.detail || 'no GPS to judge'}</span>`;
+        }
         const html = `<div class="pop"><b>${bk.name || "(no name)"}</b>
           <div class="m">${bk.type || "-"} · ${bk.status || "no status"}<br>
           ${bk.tour_date || ""} ⏰ ${bk.pickup_time || "-"}<br>
           Pickup: ${bk.pickup_location || "-"}<br>
           Driver: ${bk.driver || "none yet"} · Precision: ${bk.precision || "-"}
           ${contactHtml("Customer", bk.customer_phone)}${contactHtml("Driver", bk.driver_phone)}
-          ${isPartner ? '<br>🤝 partner-operated — no GPS expected' : ''}${lifeline}</div></div>`;
+          ${isPartner ? '<br>🤝 partner-operated — no GPS expected' : ''}${lifeline}${feasLine}</div></div>`;
         const icon = L.divIcon({ className: "", html: pinHtml,
           iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
         if (bmarkers.has(bk.booking_id)) {

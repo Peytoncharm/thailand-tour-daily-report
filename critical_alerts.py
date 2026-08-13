@@ -82,7 +82,8 @@ def _detect_states():
             "SELECT booking_id, pickup_ts, driver_id, provider_id, "
             "payload->>'Name', payload->>'Last_Name', "
             "payload->>'Pickup_Location', payload->>'Dropoff_Location', "
-            "payload->>'Route_Key' "
+            "payload->>'Route_Key', payload->>'Pickup_Lat', "
+            "payload->>'Pickup_Lng', payload->>'Pickup_Zone' "
             "FROM booking_cache WHERE tour_date = %s "
             "AND lower(coalesce(type_of_package,'')) = 'private transfer' "
             "ORDER BY pickup_ts NULLS LAST LIMIT 200",
@@ -107,11 +108,13 @@ def _detect_states():
             "SELECT DISTINCT booking_id FROM eta_history "
             "WHERE actual_sec IS NOT NULL AND method LIKE 'checkpoint:%%' "
             "AND computed_at > now() - interval '48 hours'").fetchall()}
-        ages = {r[0]: (now - r[1]).total_seconds() for r in conn.execute(
-            "SELECT driver_id, ts FROM driver_latest").fetchall()}
+        latest = {r[0]: r for r in conn.execute(
+            "SELECT driver_id, ts, lat, lng FROM driver_latest").fetchall()}
+        ages = {k: (now - v[1]).total_seconds() for k, v in latest.items()}
 
     for (bid, pickup_ts, drv_code, provider_id,
-         name, last_name, pickup_loc, dropoff_loc, route_key) in rows:
+         name, last_name, pickup_loc, dropoff_loc, route_key,
+         p_lat, p_lng, p_zone) in rows:
         if bid in arrived_ids or pickup_ts is None:
             continue
         info = {
@@ -154,6 +157,40 @@ def _detect_states():
             states[f"pregps:{bid}"] = info
             continue
 
+        # Feasibility rungs (13 Aug GO): fresh-GPS driver who physically
+        # cannot (or barely can) reach the pickup — morning-capable, the
+        # complement of the silence rungs (those need stale GPS, this
+        # needs fresh). Window: pickup within the next 3 hours.
+        if -3 * 3600 <= past_s < 0:
+            try:
+                from feasibility import compute as _feas
+                r = latest.get((drv_code or "").upper())
+                f = _feas(pickup_ts.astimezone(ICT),
+                          float(p_lat) if p_lat else None,
+                          float(p_lng) if p_lng else None,
+                          (p_zone or "").lower(),
+                          r[2] if r else None, r[3] if r else None,
+                          ages.get((drv_code or "").upper()))
+                if f["status"] in ("infeasible", "at_risk"):
+                    pk = pickup_ts.astimezone(ICT).strftime("%H:%M")
+                    fi = dict(info)
+                    fi["extra_lines"] = [
+                        f"⏱ ETA ~{f['eta']} vs รับ {pk} → "
+                        + (f"ขาด {-f['slack_min']} นาที" if f["slack_min"] < 0
+                           else f"เหลือแค่ {f['slack_min']} นาที (เกณฑ์ {f['band_min']}น.)"),
+                        f"เส้นทาง: {f['detail']}"
+                        + (" · มีเฟอร์รี่" if f.get("ferry_involved") else ""),
+                    ]
+                    if f["status"] == "infeasible":
+                        fi["alert_type"] = "feasibility-infeasible"
+                        fi["extra_lines"].append("ต้องแก้เดี๋ยวนี้ — สลับคนขับ หรือแจ้งลูกค้าเลื่อนเวลา")
+                        states[f"infeasible:{bid}"] = fi
+                    else:
+                        fi["alert_type"] = "feasibility-at-risk-amber"
+                        states[f"atrisk:{bid}"] = fi
+            except Exception as e:
+                logger.warning(f"[CRITICAL] feasibility check failed {bid}: {e}")
+
         if -WINDOW_BEFORE_S <= past_s <= WINDOW_AFTER_S:
             if age is None or age > SILENT_AFTER_S:
                 pre = past_s < 0
@@ -191,11 +228,18 @@ def _driver_line(info):
     return f"{_thai_person(name)}" + (f" · 📞 {phone}" if phone else "")
 
 
+AMBER_TYPES = {"gps-not-started-amber", "feasibility-at-risk-amber"}
+
+
 def _send_alert(alert_key, info, repeat_count, reescalation=None):
-    amber = info["alert_type"] == "gps-not-started-amber"
-    if amber:
+    amber = info["alert_type"] in AMBER_TYPES
+    if info["alert_type"] == "gps-not-started-amber":
         left = _fmt_mins(info.get("mins_to_pickup") or 0)
         header = f"🟠 ยังไม่เปิด GPS ก่อนงาน — อีก {left}ถึงเวลารับ"
+    elif info["alert_type"] == "feasibility-at-risk-amber":
+        header = "🟠 เวลาเฉียดฉิว — คนขับอาจไปรับไม่ทัน"
+    elif info["alert_type"] == "feasibility-infeasible":
+        header = "🔴 ไปรับไม่ทัน — ตำแหน่งคนขับตอนนี้ถึงไม่ทันเวลารับ (ต้องจัดการเดี๋ยวนี้!)"
     elif info["alert_type"] == "missed-pickup":
         header = "🔴 เลยเวลารับ — ยังไม่มีคนไปถึง (อาจพลาดลูกค้า!)"
     elif info["alert_type"] == "positioning-wrong-side":
@@ -234,7 +278,10 @@ def _send_alert(alert_key, info, repeat_count, reescalation=None):
                                           "mentionee": {"type": "all"}}},
         })
     accent = "#B45309" if amber else "#D02020"
-    if amber:
+    if info["alert_type"] == "feasibility-at-risk-amber":
+        note = ("เตือนครั้งเดียว — ถ้าสถานการณ์แย่ลงจนไม่ทัน "
+                "จะเตือนแดง (ต้องกดรับทราบ) อัตโนมัติ")
+    elif amber:
         drive_note = (f"เส้นทางนี้ใช้เวลาขับ ~{_fmt_mins(info['drive_min'])} · "
                       if info.get("drive_min") else "")
         note = (drive_note + "เตือนครั้งเดียว — ถ้ายังไม่เปิด GPS "
@@ -340,10 +387,9 @@ def cron_critical_alerts():
 
             for key, info in states.items():
                 row = open_rows.get(key)
-                # Amber no-GPS pre-warning is SINGLE-SHOT: one card, no
-                # repeat, no re-escalation — the red T-60 card owns the
-                # follow-through.
-                if row and info["alert_type"] == "gps-not-started-amber":
+                # Amber warnings are SINGLE-SHOT: one card, no repeat, no
+                # re-escalation — the red rungs own the follow-through.
+                if row and info["alert_type"] in AMBER_TYPES:
                     actions.append({"key": key, "action": "amber_single_sent"})
                     continue
                 if row and row["acked_at"]:

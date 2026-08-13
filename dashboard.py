@@ -189,6 +189,22 @@ def _demo_payload():
             "driver_phone": None if drv is None else f"08x-xxx-{3000 + i:04d}",
             "arrived": arrived,
             "pickup_passed": past,
+            # Demo feasibility: deterministic spread so all four chip
+            # styles are visible on the demo board
+            "feas": (None if past or drv is None else
+                     {"status": "infeasible", "slack_min": -65, "eta": f"{hh+1:02d}:05",
+                      "band_min": 60, "ferry_involved": True,
+                      "detail": "pier ~45m → ferry 06:30 +q~15m +cross 30m +drive ~40m"}
+                     if i % 7 == 0 else
+                     {"status": "at_risk", "slack_min": 12, "eta": f"{hh:02d}:03",
+                      "band_min": 30, "ferry_involved": False,
+                      "detail": "drive ~48m (geometric)"}
+                     if i % 5 == 0 else
+                     {"status": "unknown", "detail": "no GPS to judge"}
+                     if i % 3 == 0 else
+                     {"status": "ok", "slack_min": 190, "eta": f"{max(hh-3,5):02d}:40",
+                      "band_min": 30, "ferry_involved": False,
+                      "detail": "drive ~25m (geometric)"}),
         })
     # honest no-coords entries
     for i, txt in enumerate(["Sunset Villa (address unclear)",
@@ -218,6 +234,29 @@ def team_dashboard():
                            demo=(request.args.get("demo") == "1"))
 
 
+def _booking_feas(bid, pickup_ts, lat, lng, p_zone, driver_id, arrived_ids, dl):
+    """Feasibility for the map/board — only claimed for future pickups
+    within 8h (beyond that the driver will move; the question isn't live
+    yet). unknown = honest 'no GPS to judge' chip, never blank-as-fine."""
+    try:
+        if pickup_ts is None or bid in arrived_ids:
+            return None
+        tp = (pickup_ts - datetime.now(timezone.utc)).total_seconds()
+        if not (0 < tp <= 8 * 3600):
+            return None
+        if not driver_id:
+            return {"status": "unknown", "detail": "no tracked driver to judge"}
+        from feasibility import compute as _feas
+        r = dl.get((driver_id or "").upper())
+        age = (datetime.now(timezone.utc) - r[1]).total_seconds() if r else None
+        return _feas(pickup_ts.astimezone(ICT), lat, lng,
+                     (p_zone or "").lower(),
+                     r[2] if r else None, r[3] if r else None, age)
+    except Exception as e:
+        logger.warning(f"[DASHBOARD] feas {bid}: {e}")
+        return None
+
+
 def _bookings_today_tomorrow():
     """Slice 2: today+tomorrow bookings from booking_cache. Bookings with
     coordinates render as pins; the rest go to the no-coords list —
@@ -238,11 +277,14 @@ def _bookings_today_tomorrow():
                 "type_of_package, pickup_lat, pickup_lng, geocode_precision, "
                 "driver_id, provider_id, payload->>'Name', payload->>'Last_Name', "
                 "payload->>'Pickup_Location', payload->>'Dropoff_Location', "
-                "payload->>'Phone_WhatsApp', payload->>'Phone' "
+                "payload->>'Phone_WhatsApp', payload->>'Phone', "
+                "payload->>'Pickup_Zone' "
                 "FROM booking_cache WHERE tour_date = ANY(%s) "
                 "ORDER BY pickup_ts NULLS LAST LIMIT 300",
                 (days,),
             ).fetchall()
+            dl = {r[0]: r for r in conn.execute(
+                "SELECT driver_id, ts, lat, lng FROM driver_latest").fetchall()}
             # Lifecycle (11 Aug): a booking is "arrived" when the Step-2
             # completion pass closed a checkpoint row for it (GPS within
             # 300 m of the pickup pin) — the same detection, re-used.
@@ -252,7 +294,7 @@ def _bookings_today_tomorrow():
                 "AND computed_at > now() - interval '48 hours'").fetchall()}
         for (bid, tour_date, pickup_ts, status, pkg, lat, lng, prec,
              driver_id, provider_id, name, last_name, pickup_loc, dropoff_loc,
-             ph_wa, ph) in rows:
+             ph_wa, ph, p_zone) in rows:
             drv_phone = None
             if provider_id:
                 try:
@@ -288,6 +330,8 @@ def _bookings_today_tomorrow():
                 "pickup_passed": bool(
                     pickup_ts and
                     (datetime.now(timezone.utc) - pickup_ts).total_seconds() > 600),
+                "feas": _booking_feas(bid, pickup_ts, lat, lng, p_zone,
+                                      driver_id, arrived_ids, dl),
             })
     except Exception as e:
         logger.error(f"[DASHBOARD] bookings query error: {e}")

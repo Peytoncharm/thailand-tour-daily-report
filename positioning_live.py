@@ -394,8 +394,44 @@ def cron_positioning_evening():
     preview_to = (request.args.get("preview_to") or "").strip() or None
     now = datetime.now(ICT)
     fh, fm = map(int, FOLLOWUP_AFTER.split(":"))
-    phase = request.args.get("phase") or ("followup" if (now.hour, now.minute) >= (fh, fm) else "ask")
+    phase = request.args.get("phase") or (
+        "night_final" if (now.hour, now.minute) >= (22, 45)
+        else "followup" if (now.hour, now.minute) >= (fh, fm) else "ask")
     actions = []
+
+    # (c) 23:00 final escalation: an un-acked evening positioning card
+    # means NO HUMAN KNOWS YET — one mention-all before the rung sleeps.
+    # Acked cards sleep silently; the morning infeasible rung takes over.
+    if phase == "night_final":
+        try:
+            from db import _get_pool
+            pool = _get_pool()
+            with pool.connection() as conn:
+                rows = conn.execute(
+                    "SELECT alert_key, booking_id FROM critical_alerts "
+                    "WHERE cleared_at IS NULL AND acked_at IS NULL "
+                    "AND alert_key LIKE 'position:%%'").fetchall()
+            for k, bid in rows:
+                if dry_run:
+                    actions.append({"key": k, "action": "would_night_final"})
+                    continue
+                msgs = [
+                    {"type": "textV2",
+                     "text": ("{everyone} ‼️ ยังไม่มีใครกดรับทราบ — ปัญหาตำแหน่งคนขับ"
+                              f"ของงานเช้าพรุ่งนี้ยังค้างอยู่ (Booking {bid})\n"
+                              "ระบบจะหยุดเตือนคืนนี้ และเตือนต่ออัตโนมัติตอนเช้า — "
+                              "รบกวนทีมดูก่อนนอนค่ะ"),
+                     "substitution": {"everyone": {"type": "mention",
+                                                   "mentionee": {"type": "all"}}}},
+                ]
+                if not _push(TEAM_LINE_GROUP_ID, msgs):
+                    _push(TEAM_LINE_GROUP_ID, [{"type": "text",
+                          "text": msgs[0]["text"].replace("{everyone} ", "")}])
+                actions.append({"key": k, "action": "night_final_sent"})
+        except Exception as e:
+            logger.warning(f"[POS-LIVE] night_final failed: {e}")
+        return jsonify({"ok": True, "phase": phase, "dry_run": dry_run,
+                        "actions": actions}), 200
     try:
         bookings = _scan(for_date=for_date)
         for b in bookings:

@@ -47,6 +47,13 @@
   .pill { border:1px solid var(--line); border-radius:8px; padding:1px 8px;
     font-size:11px; color:var(--muted); white-space:nowrap; }
   .pill.ok { color:var(--green); border-color:#1e4d3e; }
+  /* Feasibility chips (13 Aug): job-level, independent of the GPS dot */
+  .fchip { display:inline-block; border-radius:8px; padding:2px 9px;
+    font-size:11px; white-space:nowrap; }
+  .fchip.red { background:rgba(240,96,96,.16); color:var(--red); border:1px solid #6b2b2b; }
+  .fchip.amber { background:rgba(240,180,41,.13); color:var(--amber); border:1px solid #6b5a1e; }
+  .fchip.okc { color:var(--muted); border:1px solid var(--line); }
+  .fchip.unk { color:var(--grey); border:1px dashed var(--line); opacity:.75; }
   /* BU tabs (11 Aug): Transfer-only default — high-season mixed view drowns */
   #tabs { margin:2px 0 12px; display:flex; gap:6px; }
   .tab { background:var(--panel2); color:var(--muted); border:1px solid var(--line);
@@ -106,6 +113,8 @@
       <div>Red left edge — needs attention: missed pickup, red signal, no driver, or no coordinates</div>
       <div>Faded row with ✓ — completed (arrived at pickup; partner jobs auto-complete at pickup time)</div>
       <div>⚠ อาจพลาดลูกค้า — pickup time passed, NO arrival — possible missed customer (ด่วนสุด!)</div>
+      <div style="margin-top:6px"><b>Feasibility column</b> — can the driver physically reach the pickup in time (ferry-aware):</div>
+      <div>⏱ won't make it (red) · tight (amber, slack &lt; 30 min / 60 with ferry) · on track · "no GPS to judge" = honest unknown, not fine</div>
     </div>
   </details>
   <table>
@@ -117,6 +126,7 @@
       <th data-k="status">Status <span class="arrow">↕</span></th>
       <th data-k="driver">Driver <span class="arrow">↕</span></th>
       <th data-k="signal">Signal</th>
+      <th data-k="feas">Feasibility</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -212,8 +222,20 @@
   }
   function attention(bk) {
     if (lifecycle(bk) === "missed") return true;
+    if (bk.feas && bk.feas.status === "infeasible") return true;
     const s = signal(bk);
     return !bk.driver || s.c === "var(--red)" || bk.lat == null;
+  }
+  function feasCell(bk) {
+    const f = bk.feas;
+    if (!f || lifecycle(bk) !== "open" || isPartnerB(bk)) return '<span class="m">–</span>';
+    if (f.status === "infeasible")
+      return `<span class="fchip red" title="${f.detail||''}">⏱ won't make it (${f.slack_min}m)</span>`;
+    if (f.status === "at_risk")
+      return `<span class="fchip amber" title="${f.detail||''}">⏱ tight (+${f.slack_min}m)</span>`;
+    if (f.status === "ok")
+      return `<span class="fchip okc">on track (+${f.slack_min}m)</span>`;
+    return `<span class="fchip unk">no GPS to judge</span>`;
   }
   function sortVal(bk) {
     switch (sortKey) {
@@ -245,6 +267,7 @@
       <td data-l="Driver">${driverCell(bk)}</td>
       <td data-l="Signal"><span class="dot" style="background:${s.c}"></span>
         <span class="m">${s.label}</span></td>
+      <td data-l="Feasibility">${feasCell(bk)}</td>
     </tr>`;
   }
 
@@ -283,7 +306,7 @@
   }
   document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
     const k = th.dataset.k;
-    if (k === "route" || k === "signal") return;
+    if (k === "route" || k === "signal" || k === "feas") return;
     if (sortKey === k) sortAsc = !sortAsc; else { sortKey = k; sortAsc = true; }
     render();
   }));
