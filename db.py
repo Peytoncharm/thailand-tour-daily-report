@@ -166,6 +166,23 @@ CREATE TABLE IF NOT EXISTS critical_alerts (
 );
 ALTER TABLE critical_alerts ADD COLUMN IF NOT EXISTS reescalations int NOT NULL DEFAULT 0;
 
+CREATE TABLE IF NOT EXISTS positioning_checks (
+  booking_id   text NOT NULL,
+  check_date   date NOT NULL,
+  side_required text,
+  zone         text,
+  driver_id    text,
+  provider_id  text,
+  driver_uid   text,
+  status       text NOT NULL,
+  answer       text,
+  detail       text,
+  asked_at     timestamptz,
+  answered_at  timestamptz,
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (booking_id, check_date)
+);
+
 CREATE TABLE IF NOT EXISTS alert_log (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   booking_id text,
@@ -392,6 +409,7 @@ _PURGES = [
     ("eta_history",      "DELETE FROM eta_history WHERE computed_at < now() - interval '30 days'"),
     ("alert_log",        "DELETE FROM alert_log WHERE sent_at < now() - interval '90 days'"),
     ("critical_alerts",  "DELETE FROM critical_alerts WHERE first_sent < now() - interval '90 days'"),
+    ("positioning_checks", "DELETE FROM positioning_checks WHERE check_date < (now() - interval '90 days')::date"),
     ("booking_cache",    "DELETE FROM booking_cache WHERE tour_date < (now() - interval '60 days')::date"),
 ]
 

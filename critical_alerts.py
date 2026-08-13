@@ -162,6 +162,14 @@ def _detect_states():
                 info["mins_to_pickup"] = int(-past_s // 60) if pre else None
                 info["never_started"] = never_started
                 states[("presilent:" if pre else "silent:") + str(bid)] = info
+
+    # Evening positioning (LIVE, 13 Aug): wrong-side drivers for tomorrow
+    # morning's island/mainland pickups join the same ack-repeat machinery
+    try:
+        from positioning_live import wrong_side_states
+        states.update(wrong_side_states())
+    except Exception as e:
+        logger.warning(f"[CRITICAL] positioning states failed: {e}")
     return states
 
 
@@ -190,6 +198,8 @@ def _send_alert(alert_key, info, repeat_count, reescalation=None):
         header = f"🟠 ยังไม่เปิด GPS ก่อนงาน — อีก {left}ถึงเวลารับ"
     elif info["alert_type"] == "missed-pickup":
         header = "🔴 เลยเวลารับ — ยังไม่มีคนไปถึง (อาจพลาดลูกค้า!)"
+    elif info["alert_type"] == "positioning-wrong-side":
+        header = "🔴 คนขับอยู่ผิดฝั่ง — งานเช้าพรุ่งนี้ (ต้องจัดการคืนนี้!)"
     else:
         mins = info.get("silent_min")
         if info.get("never_started"):
@@ -240,6 +250,10 @@ def _send_alert(alert_key, info, repeat_count, reescalation=None):
              "size": "sm", "wrap": True},
             {"type": "text", "text": f"เส้นทาง: {info['route']}", "size": "sm", "wrap": True},
             {"type": "text", "text": f"คนขับ: {_driver_line(info)}", "size": "sm", "wrap": True},
+        ] + [
+            {"type": "text", "text": l, "size": "xs", "color": "#555555",
+             "wrap": True, "margin": "sm"}
+            for l in (info.get("extra_lines") or [])
         ] + body_extra + [
             {"type": "text", "text": note,
              "size": "xs", "color": "#999999", "wrap": True, "margin": "md"},
