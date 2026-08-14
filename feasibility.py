@@ -168,28 +168,19 @@ def compute(pickup_dt, pickup_lat, pickup_lng, pickup_zone,
             return {"status": "unknown", "detail": "ferry pins missing"}
         to_pier = _drive_min(driver_lat, driver_lng, op["lat"], op["lng"])
         pier_arrive = now + timedelta(minutes=to_pier)
-        sail = m.get("sailings", {})
-        fh, fm = map(int, sail.get("first", "06:30").split(":"))
-        lh, lm = map(int, sail.get("last", "18:30").split(":"))
-        interval = int(sail.get("interval_min", 45))
-        day = pier_arrive.replace(hour=fh, minute=fm, second=0, microsecond=0)
-        last_dt = pier_arrive.replace(hour=lh, minute=lm, second=0, microsecond=0)
-        if pier_arrive <= day:
-            dep = day
-        elif pier_arrive > last_dt:
-            dep = day + timedelta(days=1)
-        else:
-            n = math.ceil((pier_arrive - day).total_seconds() / 60 / interval)
-            dep = day + timedelta(minutes=n * interval)
-            if dep > last_dt:
-                dep = day + timedelta(days=1)
-        queue = int((m.get("queue_min_baseline") or {}).get("default", 15))
+        # Verified timetable (14 Aug): next sailing is a LIST LOOKUP with
+        # the 45-min pre-boarding rule (cash-only counter, no pre-purchase)
+        from ferry_model import next_departure
+        dep = next_departure(pier_arrive, m)
+        if dep is None:
+            return {"status": "unknown", "detail": "no catchable sailing found"}
         crossing = int(m.get("crossing_min", 30))
         leg = _drive_min(dp["lat"], dp["lng"], pickup_lat, pickup_lng)
-        eta_dt = dep + timedelta(minutes=queue + crossing + leg)
+        eta_dt = dep + timedelta(minutes=crossing + leg)
+        pre = int(m.get("pre_boarding_min", 45))
         detail_bits.append(
             f"pier ~{int(to_pier)}m → ferry {dep.strftime('%H:%M' if dep.date() == now.date() else '%d/%m %H:%M')} "
-            f"+q~{queue}m +cross {crossing}m +drive ~{int(leg)}m")
+            f"(ถึงท่าก่อน {pre}น.) +cross {crossing}m +drive ~{int(leg)}m")
 
     slack_min = int((pickup_dt - eta_dt).total_seconds() // 60)
     band = AT_RISK_MIN_FERRY if ferry_involved else AT_RISK_MIN

@@ -1,10 +1,20 @@
 {
-  "_comment": "EDITABLE DATA, not code (spec Step 5 / P-A). Reloaded on every pass - edits need a push but no code change. D-P1 sailing values are Orathai's own (10 Aug), NOT yet verified against the operator schedule - check before the P-A gate closes. Queue baselines are placeholders until the queue-learning loop reports observed values.",
+  "_comment": "EDITABLE DATA, not code. VERIFIED 14 Aug 2026 against the real operator timetable supplied by Orathai (เรือไปเกาะช้าง - ท่าเรืออ่าวธรรมชาติ / Ao Thammachat, updated April 2026). Ao Thammachat is the ONLY pier in use (Orathai confirmed) - single crossing point, no multi-pier logic. Queue baselines remain only for the shadow queue-learning drift comparison; live readers use pre_boarding_min.",
   "pier_mainland": "ao thammachat pier",
   "pier_island": "ao sapparot pier",
-  "sailings": { "first": "06:30", "last": "18:30", "interval_min": 45 },
+  "sailings": {
+    "times": ["06:30", "07:45", "08:45", "09:45", "10:45", "11:45", "12:45",
+              "13:45", "14:45", "15:45", "16:45", "17:45", "18:30"],
+    "first": "06:30",
+    "last": "18:30",
+    "_note": "Actual departure list, identical both directions (Trat <-> Koh Chang). Next sailing = LIST LOOKUP, never interval math. Published list is a conservative FLOOR - the operator runs unpublished extra boats in peak; do NOT model them (warning early is the correct bias for an alert system). Timetable caveat: rounds may change with weather - FEASIBLE/AT-RISK wording must say 'ตามตารางปกติ'; only IMPOSSIBLE may be stated firmly."
+  },
+  "pre_boarding_min": 45,
+  "_pre_boarding_note": "Operator instruction: 'ควรมาก่อนเวลาเรือออกอย่างน้อย 45 นาที'. Ticket office opens 05:30, CASH ONLY, no scan/transfer, counter queue - no pre-purchase. The 06:30 sailing requires being at the pier by ~05:45. Replaces the old ~15 min queue estimate (a 30-min under-estimate, large enough to flip verdicts).",
   "positioning_deadline": "17:45",
   "crossing_min": 30,
+  "crossing_min_verified": false,
+  "_crossing_note": "NOT printed on the operator timetable - unverified estimate; revisit once real GPS trails give an observed figure.",
   "queue_min_baseline": { "default": 15, "high_season": 40, "weekend_peak": 60 },
   "island_cutoff": "09:00",
   "mainland_cutoff": "07:00"

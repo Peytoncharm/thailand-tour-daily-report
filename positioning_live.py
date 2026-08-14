@@ -107,7 +107,7 @@ def ferry_math(now_ict, pickup_dt, zone, side_required):
     sail = m.get("sailings", {})
     first_s, last_s = sail.get("first", "06:30"), sail.get("last", "18:30")
     crossing = int(m.get("crossing_min", 30))
-    queue = int((m.get("queue_min_baseline") or {}).get("default", 15))
+    pre = int(m.get("pre_boarding_min", 45))
 
     # drive from the destination-side pier to the pickup zone
     pier_key = m.get("pier_island", "ao sapparot pier") if side_required == "island" \
@@ -118,25 +118,33 @@ def ferry_math(now_ict, pickup_dt, zone, side_required):
         km = _haversine_km((zp["lat"], zp["lng"]), (pp["lat"], pp["lng"]))
         leg_min = int(km / 35 * 60) + 10  # crude 35 km/h + 10 min buffer
 
+    # Verified timetable (14 Aug): 45-min pre-boarding (cash-only counter,
+    # no pre-purchase) — a sailing is catchable only if at the pier 45 min
+    # before departure. Weather caveat: non-IMPOSSIBLE wording must say
+    # "ตามตารางปกติ" — the operator reserves weather changes.
     lh, lm = map(int, last_s.split(":"))
     last_dt = now_ict.replace(hour=lh, minute=lm, second=0, microsecond=0)
-    fh, fm = map(int, first_s.split(":"))
-    first_dt = (now_ict + timedelta(days=1)).replace(hour=fh, minute=fm,
-                                                    second=0, microsecond=0)
     lines = []
-    if now_ict < last_dt:
-        mins_left = int((last_dt - now_ict).total_seconds() // 60)
+    if now_ict <= last_dt - timedelta(minutes=pre):
+        mins_left = int((last_dt - timedelta(minutes=pre) - now_ict).total_seconds() // 60)
         cls = "FEASIBLE"
-        lines.append(f"⛴ ยังข้ามคืนนี้ทัน — เที่ยวสุดท้าย {last_s} (อีก {mins_left} นาที)")
+        lines.append(f"⛴ ยังข้ามคืนนี้ทันตามตารางปกติ — เที่ยวสุดท้าย {last_s} "
+                     f"ต้องถึงท่าก่อน {(last_dt - timedelta(minutes=pre)).strftime('%H:%M')} "
+                     f"(อีก {mins_left} นาที · ตั๋วเงินสดหน้าท่าเท่านั้น)")
     else:
-        arrival = first_dt + timedelta(minutes=queue + crossing + leg_min)
+        from ferry_model import next_departure
+        dep = next_departure(now_ict, m) or (now_ict + timedelta(days=1)).replace(
+            hour=6, minute=30, second=0, microsecond=0)
+        arrival = dep + timedelta(minutes=crossing + leg_min)
         margin = int((pickup_dt - arrival).total_seconds() // 60)
-        lines.append(f"⛴ เที่ยวสุดท้ายวันนี้ {last_s} — หมดแล้ว")
-        lines.append(f"⛴ เที่ยวแรกพรุ่งนี้ {first_s} + คิว ~{queue}น. + ข้าม ~{crossing}น. "
+        lines.append(f"⛴ เที่ยวสุดท้ายวันนี้ {last_s} — ไม่ทันแล้ว (ต้องถึงท่าก่อน {pre} นาที)")
+        lines.append(f"⛴ เที่ยวแรกพรุ่งนี้ {dep.strftime('%H:%M')} (ต้องถึงท่า "
+                     f"{(dep - timedelta(minutes=pre)).strftime('%H:%M')}) + ข้าม ~{crossing}น. "
                      f"+ ขับไปจุดรับ ~{leg_min}น. → ถึงประมาณ {arrival.strftime('%H:%M')}")
         if margin >= 15:
             cls = "AT-RISK"
-            lines.append(f"⏱ รับลูกค้า {pickup_dt.strftime('%H:%M')} → เหลือ margin ~{margin} นาที (เฉียดฉิว)")
+            lines.append(f"⏱ รับลูกค้า {pickup_dt.strftime('%H:%M')} → เหลือ margin ~{margin} นาที "
+                         f"ตามตารางปกติ (เฉียดฉิว — อากาศ/รอบเรืออาจเปลี่ยน)")
         else:
             cls = "IMPOSSIBLE"
             lines.append(f"⏱ รับลูกค้า {pickup_dt.strftime('%H:%M')} → ไม่ทัน (ขาด ~{-margin} นาที) — ต้องแก้คืนนี้")

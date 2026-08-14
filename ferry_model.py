@@ -71,6 +71,25 @@ def load_model():
     return _model_cache["data"] or {}
 
 
+def next_departure(pier_arrive_dt, model=None):
+    """First catchable sailing at/after pier arrival, honoring the 45-min
+    pre-boarding rule: a departure D is catchable iff pier_arrive <= D −
+    pre_boarding_min. LIST LOOKUP from the verified timetable (14 Aug) —
+    never interval math. Rolls to the next day's first sailing when the
+    day's list is exhausted. Returns a datetime in the input's tz."""
+    m = model or load_model()
+    times = (m.get("sailings") or {}).get("times") or ["06:30", "18:30"]
+    pre = int(m.get("pre_boarding_min", 45))
+    for day_off in (0, 1):
+        base = pier_arrive_dt + timedelta(days=day_off)
+        for t in times:
+            hh, mm = map(int, t.split(":"))
+            dep = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if pier_arrive_dt <= dep - timedelta(minutes=pre):
+                return dep
+    return None
+
+
 def _pier_pins():
     from pickup_matcher import _load_points
     pts = _load_points()

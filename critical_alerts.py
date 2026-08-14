@@ -187,6 +187,9 @@ def _detect_states():
                         states[f"infeasible:{bid}"] = fi
                     else:
                         fi["alert_type"] = "feasibility-at-risk-amber"
+                        if f.get("ferry_involved"):
+                            fi["extra_lines"].append(
+                                "ตามตารางปกติ — รอบเรืออาจเปลี่ยนตามสภาพอากาศ")
                         states[f"atrisk:{bid}"] = fi
             except Exception as e:
                 logger.warning(f"[CRITICAL] feasibility check failed {bid}: {e}")
