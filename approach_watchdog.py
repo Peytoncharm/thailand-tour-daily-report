@@ -9,7 +9,8 @@ Blueprint: approach_watchdog_bp
 Endpoints:
   /cron/approach-send                 — pickup in ~6hr → LINE driver the GPS link
   /cron/approach-watchdog-soft        — pickup in ~5.5hr, no GPS → soft alert
-  /cron/approach-auto-rebroadcast     — pickup in ~5hr, soft-alerted, no GPS → rebroadcast
+  /cron/approach-auto-rebroadcast     — pickup in ~5hr, soft-alerted, no GPS → PROPOSE rebroadcast (team decides)
+  /rebroadcast/decision               — team tap relay: [ใช่] → DM webhook with manual_approved
 
 Env vars:
   DRIVER_OPS_LINE_GROUP_ID  — LINE group for ops alerts
@@ -87,6 +88,28 @@ def _push_line_group(message: str) -> bool:
         return False
     except Exception as e:
         logger.error(f"[WATCHDOG] LINE push exception: {e}")
+        return False
+
+
+def _push_group_flex(alt_text: str, bubble: dict) -> bool:
+    """Push a flex bubble to the Driver Ops group. True only on HTTP 200."""
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Authorization": f"Bearer {TRANSFER_LINE_TOKEN}",
+    }
+    body = {
+        "to": DRIVER_OPS_LINE_GROUP_ID,
+        "messages": [{"type": "flex", "altText": alt_text, "contents": bubble}],
+    }
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            return True
+        logger.error(f"[WATCHDOG] LINE flex push failed: {resp.status_code} {resp.text}")
+        return False
+    except Exception as e:
+        logger.error(f"[WATCHDOG] LINE flex push exception: {e}")
         return False
 
 
@@ -802,12 +825,17 @@ def approach_auto_rebroadcast():
     Cron: every 5 min.
     Last resort: driver completely unresponsive, pickup in ~5hr.
     Only fires on bookings that already went through soft alert.
-    Triggers DM V1 to find a replacement driver.
+
+    P0-1 (15 Aug incident review): PROPOSE-ONLY. Posts ONE card to the
+    team ("GPS เงียบ — ประกาศหาคนขับใหม่ไหม? [ใช่][ไม่]"). It NEVER calls
+    the DM webhook itself — a confirmed provider is never replaced
+    without a human tap. The [ใช่] postback relays through
+    transfer-line-webhook to /rebroadcast/decision below, which calls
+    DM V1 with manual_approved=true (the gate honors that flag for its
+    <12h rule only).
 
     Loop guard: Assignment_Status must NOT be 'broadcasting'.
-    If DM V1 is already active for this booking, skip it.
-    No flag write needed — DM V1 itself sets Assignment_Status
-    to 'broadcasting', which the loop guard catches next cycle.
+    Dedupe: critical_alerts row rbprop:<booking_id> = one card ever.
     """
     now = _now_ict()
     today = now.strftime("%Y-%m-%d")
@@ -882,48 +910,140 @@ def approach_auto_rebroadcast():
         name = (r.get("Name") or r.get("Last_Name") or "Unknown").strip()
         route = r.get("Transfer_Route") or "No route"
 
-        # Step 1: Trigger DM V1 rebroadcast via n8n webhook
+        # \u2500\u2500 P0-1 (15 Aug incident review): PROPOSE ONLY, never auto-assign \u2500\u2500
+        # The system may suggest a rebroadcast; only a human tap [\u0e43\u0e0a\u0e48]
+        # actually triggers DM V1 (via /rebroadcast/decision with
+        # manual_approved). A confirmed provider is never replaced
+        # automatically.
+
+        # Dedupe: one proposal card per booking, ever
         try:
-            resp = requests.post(
-                DM_WEBHOOK_URL,
-                json={"id": booking_id},
-                timeout=15,
-            )
-            if resp.status_code not in (200, 201):
-                logger.error(
-                    f"[WATCHDOG-REBROADCAST] DM webhook non-OK for {booking_id}: "
-                    f"{resp.status_code} {resp.text}"
-                )
-                continue
+            from db import _get_pool
+            pool = _get_pool()
+            with pool.connection() as conn:
+                if conn.execute(
+                        "SELECT 1 FROM critical_alerts WHERE alert_key = %s",
+                        (f"rbprop:{booking_id}",)).fetchone():
+                    continue
         except Exception as e:
-            logger.error(f"[WATCHDOG-REBROADCAST] DM webhook failed {booking_id}: {e}")
+            logger.error(f"[WATCHDOG-REBROADCAST] dedupe check failed {booking_id}: {e}")
+            continue  # no dedupe = no send; better silent than a repeat storm
+
+        bubble = {
+            "type": "bubble",
+            "header": {"type": "box", "layout": "vertical",
+                       "backgroundColor": "#f59e0b", "paddingAll": "12px",
+                       "contents": [{"type": "text", "size": "md", "weight": "bold",
+                                     "color": "#ffffff", "wrap": True,
+                                     "text": "\ud83d\udd04 GPS \u0e40\u0e07\u0e35\u0e22\u0e1a \u0e43\u0e01\u0e25\u0e49\u0e16\u0e36\u0e07\u0e07\u0e32\u0e19 \u2014 \u0e1b\u0e23\u0e30\u0e01\u0e32\u0e28\u0e2b\u0e32\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e43\u0e2b\u0e21\u0e48\u0e44\u0e2b\u0e21\u0e04\u0e30?"}]},
+            "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "text", "wrap": True, "size": "sm",
+                 "text": f"\ud83d\udd16 \u0e04\u0e38\u0e13{name}"},
+                {"type": "text", "wrap": True, "size": "sm",
+                 "text": f"\u23f0 Pickup {pickup_time} (\u0e2d\u0e35\u0e01\u0e1b\u0e23\u0e30\u0e21\u0e32\u0e13 5 \u0e0a\u0e21.)"},
+                {"type": "text", "wrap": True, "size": "sm", "text": f"\ud83d\udccd {route}"},
+                {"type": "text", "wrap": True, "size": "xs", "color": "#666666",
+                 "text": "\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e17\u0e35\u0e48\u0e22\u0e37\u0e19\u0e22\u0e31\u0e19\u0e44\u0e27\u0e49\u0e22\u0e31\u0e07\u0e44\u0e21\u0e48\u0e15\u0e2d\u0e1a\u0e41\u0e25\u0e30\u0e44\u0e21\u0e48\u0e21\u0e35\u0e2a\u0e31\u0e0d\u0e0d\u0e32\u0e13 GPS "
+                         "\u0e17\u0e35\u0e21\u0e07\u0e32\u0e19\u0e08\u0e30\u0e44\u0e21\u0e48\u0e40\u0e1b\u0e25\u0e35\u0e48\u0e22\u0e19\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e40\u0e2d\u0e07\u0e42\u0e14\u0e22\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34 \u2014 "
+                         "\u0e01\u0e14\u0e40\u0e25\u0e37\u0e2d\u0e01\u0e14\u0e49\u0e32\u0e19\u0e25\u0e48\u0e32\u0e07\u0e44\u0e14\u0e49\u0e40\u0e25\u0e22\u0e04\u0e48\u0e30"},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "button", "style": "primary", "color": "#f59e0b",
+                 "action": {"type": "postback",
+                            "label": "\u0e43\u0e0a\u0e48 \u0e1b\u0e23\u0e30\u0e01\u0e32\u0e28\u0e2b\u0e32\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e43\u0e2b\u0e21\u0e48",
+                            "data": f"action=rebroadcast_go&key={booking_id}",
+                            "displayText": "\u0e43\u0e0a\u0e48 \u0e1b\u0e23\u0e30\u0e01\u0e32\u0e28\u0e2b\u0e32\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e43\u0e2b\u0e21\u0e48"}},
+                {"type": "button", "style": "secondary",
+                 "action": {"type": "postback",
+                            "label": "\u0e44\u0e21\u0e48 \u0e43\u0e0a\u0e49\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e40\u0e14\u0e34\u0e21\u0e15\u0e48\u0e2d",
+                            "data": f"action=rebroadcast_no&key={booking_id}",
+                            "displayText": "\u0e44\u0e21\u0e48 \u0e43\u0e0a\u0e49\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e40\u0e14\u0e34\u0e21\u0e15\u0e48\u0e2d"}},
+            ]},
+        }
+        if not _push_group_flex(f"GPS \u0e40\u0e07\u0e35\u0e22\u0e1a \u2014 \u0e40\u0e2a\u0e19\u0e2d\u0e1b\u0e23\u0e30\u0e01\u0e32\u0e28\u0e2b\u0e32\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e43\u0e2b\u0e21\u0e48 ({name})", bubble):
             continue
 
-        # Step 2: Notify group (best-effort)
-        msg = (
-            "\U0001f504 Auto-Rebroadcast \u0e2a\u0e48\u0e07\u0e41\u0e25\u0e49\u0e27\n\n"
-            f"\U0001f516 {name}\n"
-            f"\u23f0 Pickup: {pickup_time} (pickup \u0e2d\u0e35\u0e01 5 \u0e0a\u0e21.)\n"
-            f"\U0001f4cd {route}\n\n"
-            "Provider \u0e40\u0e14\u0e34\u0e21\u0e44\u0e21\u0e48\u0e15\u0e2d\u0e1a GPS"
-            " \u2192 broadcast \u0e2b\u0e32\u0e04\u0e19\u0e02\u0e31\u0e1a\u0e43\u0e2b\u0e21\u0e48"
-            "\u0e2d\u0e31\u0e15\u0e42\u0e19\u0e21\u0e31\u0e15\u0e34\n"
-            "\u0e16\u0e49\u0e32\u0e21\u0e35\u0e04\u0e19\u0e23\u0e31\u0e1a\u0e08\u0e30"
-            " assign \u0e17\u0e31\u0e19\u0e17\u0e35"
-        )
-        _push_line_group(msg)
-
-        # No flag write needed here.
-        # DM V1 sets Assignment_Status = 'broadcasting' which
-        # prevents re-trigger on next cron cycle via loop guard above.
+        try:
+            with pool.connection() as conn:
+                conn.execute(
+                    "INSERT INTO critical_alerts (alert_key, alert_type, "
+                    "booking_id) VALUES (%s, 'rebroadcast-proposal', %s) "
+                    "ON CONFLICT (alert_key) DO NOTHING",
+                    (f"rbprop:{booking_id}", booking_id))
+        except Exception as e:
+            logger.error(f"[WATCHDOG-REBROADCAST] dedupe write failed {booking_id}: {e}")
         rebroadcast_count += 1
 
     logger.info(
-        f"[WATCHDOG-REBROADCAST] Rebroadcast {rebroadcast_count}, "
+        f"[WATCHDOG-REBROADCAST] Proposed {rebroadcast_count}, "
         f"skipped {skipped_broadcasting} already-broadcasting"
     )
     return jsonify({
         "status": "ok",
-        "rebroadcast": rebroadcast_count,
+        "proposed": rebroadcast_count,
         "skipped_broadcasting": skipped_broadcasting,
     })
+
+
+@approach_watchdog_bp.route("/rebroadcast/decision", methods=["POST"])
+def rebroadcast_decision():
+    """
+    Team decision relay for a rebroadcast proposal (P0-1/P0-2).
+    Body: {"booking_id": ..., "decision": "go"|"no", "by": <display name>}
+
+    go → calls the DM V1 webhook with manual_approved=true; ONE truth is
+    reported to the group and it reflects what actually happened
+    (request accepted vs failed) — never "ส่งแล้ว" before the fact.
+    no → records the decision; nothing else fires (dedupe row already
+    prevents a second card).
+    """
+    cron_secret = os.environ.get("CRON_SECRET", "")
+    if cron_secret and request.args.get("key", "") != cron_secret:
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    bid = (body.get("booking_id") or "").strip()
+    decision = (body.get("decision") or "").strip().lower()
+    by = (body.get("by") or "team").strip()[:80]
+    if not bid or decision not in ("go", "no"):
+        return jsonify({"status": "error", "message": "need booking_id + decision go|no"}), 400
+
+    # Idempotence: only the FIRST decision acts
+    try:
+        from db import _get_pool
+        pool = _get_pool()
+        with pool.connection() as conn:
+            row = conn.execute(
+                "UPDATE critical_alerts SET acked_at = now(), acked_by = %s, "
+                "cleared_at = now() "
+                "WHERE alert_key = %s AND acked_at IS NULL "
+                "RETURNING alert_key",
+                (f"{by}:{decision}", f"rbprop:{bid}")).fetchone()
+        if row is None:
+            return jsonify({"status": "already_decided"}), 200
+    except Exception as e:
+        logger.error(f"[REBROADCAST-DECISION] db error {bid}: {e}")
+        return jsonify({"status": "error", "message": str(e)[:150]}), 500
+
+    if decision == "no":
+        logger.info(f"[REBROADCAST-DECISION] {bid}: declined by {by}")
+        return jsonify({"status": "declined"}), 200
+
+    # decision == go → trigger DM V1 with the manual-approval flag
+    try:
+        resp = requests.post(DM_WEBHOOK_URL,
+                             json={"id": bid, "manual_approved": True},
+                             timeout=15)
+        ok = resp.status_code in (200, 201)
+    except Exception as e:
+        logger.error(f"[REBROADCAST-DECISION] DM webhook failed {bid}: {e}")
+        ok = False
+    if ok:
+        _push_line_group(
+            f"📣 รับคำสั่งจากคุณ{by}แล้วค่ะ — ส่งงานเข้าระบบประกาศหาคนขับใหม่แล้ว\n"
+            "ระบบจะแจ้งในกลุ่มเมื่อมีคนขับกดรับงานค่ะ")
+        logger.info(f"[REBROADCAST-DECISION] {bid}: GO by {by}, DM webhook accepted")
+        return jsonify({"status": "sent"}), 200
+    _push_line_group(
+        "⚠️ ส่งคำขอประกาศหาคนขับใหม่ไม่สำเร็จค่ะ (ระบบ DM ไม่ตอบรับ) — "
+        "รบกวนทีมงานจัดการเองก่อนนะคะ")
+    return jsonify({"status": "dm_webhook_failed"}), 502

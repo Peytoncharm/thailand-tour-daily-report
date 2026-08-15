@@ -113,10 +113,25 @@ def _detect_states():
             "SELECT driver_id, ts, lat, lng FROM driver_latest").fetchall()}
         ages = {k: (now - v[1]).total_seconds() for k, v in latest.items()}
 
+    # Human-truth resolutions ("ยืนยันรับลูกค้าแล้ว") close the ENTIRE
+    # alert lifecycle for a booking (P1-5, 15 Aug incident review)
+    with pool.connection() as conn2:
+        humanok = {r[0].split(":", 1)[1] for r in conn2.execute(
+            "SELECT alert_key FROM critical_alerts "
+            "WHERE alert_key LIKE 'humanok:%%' "
+            "AND first_sent::date >= current_date - 1").fetchall()}
+
     for (bid, pickup_ts, drv_code, provider_id,
          name, last_name, pickup_loc, dropoff_loc, route_key,
          p_lat, p_lng, p_zone, b_status, b_pay) in rows:
         if bid in arrived_ids or pickup_ts is None:
+            continue
+        # AUTO-RESOLVE (global, P1-5): completed/paid bookings and
+        # human-confirmed pickups raise NOTHING, any rung
+        sv = (b_status or "").strip().lower()
+        if (sv in ("completed", "booking completed")
+                or (b_pay or "").strip() == "Paid"
+                or str(bid) in humanok):
             continue
         info = {
             "booking_id": bid,
@@ -132,10 +147,6 @@ def _detect_states():
             # on one completed job):
             # TIME HORIZON: never alert a missed pickup >3h after the fact
             if past_s > 3 * 3600:
-                continue
-            # AUTO-RESOLVE: completed or paid bookings are closed matters
-            sv = (b_status or "").strip().lower()
-            if sv in ("completed", "booking completed") or (b_pay or "").strip() == "Paid":
                 continue
             # HONESTY (never-guess rule): with NO GPS history for the
             # driver, arrival can never be detected — absence of tracking
@@ -153,6 +164,14 @@ def _detect_states():
         # a fresh silence alert after the pickup time passes — the ladder
         # re-escalates on each state transition (presilent → silent →
         # missed), never across one.
+        # EARLY-PICKUP SUPPRESSION (locked D-P2 rule, applied here after
+        # the 15 Aug 02:15–03:00 violations): pre-09:00 pickups get NO
+        # morning-side alerts before T-90 — the evening-before check is
+        # the real defense; mornings only confirm.
+        p_ict = pickup_ts.astimezone(ICT)
+        if p_ict.hour < 9 and past_s < -90 * 60:
+            continue
+
         if not drv_code:
             continue
         age = ages.get((drv_code or "").upper())
@@ -251,8 +270,8 @@ def _driver_line(info):
 AMBER_TYPES = {"gps-not-started-amber", "feasibility-at-risk-amber",
                "missed-pickup-untracked"}
 MAX_SENDS = 3          # REPEAT CAP: max fires per booking-condition, then stop
-MAX_REESCALATIONS = 1  # an ack buys 30 min at most ONCE; missed-pickup acks
-                       # are permanent (post-hoc state can never self-clear)
+# P1-3 (15 Aug review): ack = PERMANENT resolution for a booking+condition.
+# Re-escalation is disabled entirely; a new condition gets a NEW alert key.
 
 
 def _send_alert(alert_key, info, repeat_count, reescalation=None):
@@ -336,11 +355,19 @@ def _send_alert(alert_key, info, repeat_count, reescalation=None):
         ]},
     }
     if not amber:
-        bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
+        bubble["footer"] = {"type": "box", "layout": "vertical", "spacing": "sm",
+                           "contents": [
             {"type": "button", "style": "primary", "color": accent,
              "action": {"type": "postback", "label": "รับทราบ — กำลังจัดการ",
                         "data": f"action=ack_critical&key={alert_key}",
                         "displayText": "รับทราบ — กำลังจัดการ"}},
+            # Human truth (P1-5): confirming the customer was collected
+            # closes the WHOLE alert lifecycle for this booking
+            {"type": "button", "style": "secondary",
+             "action": {"type": "postback",
+                        "label": "✅ ยืนยันรับลูกค้าแล้ว",
+                        "data": f"action=resolve_booking&key={info.get('booking_id', '')}",
+                        "displayText": "✅ ยืนยันรับลูกค้าแล้ว"}},
         ]}
     flex = {
         "type": "flex",
@@ -422,35 +449,12 @@ def cron_critical_alerts():
                     actions.append({"key": key, "action": "amber_single_sent"})
                     continue
                 if row and row["acked_at"]:
-                    # ACK lifecycle (15 Aug rules): missed-pickup acks are
-                    # PERMANENT (the post-hoc state can never self-clear —
-                    # 8 expired acks proved it). Other reds: an ack buys 30
-                    # min, re-escalation at most ONCE, and never past the
-                    # send cap.
-                    ack_age = (now - row["acked_at"]).total_seconds()
-                    if (key.startswith("missed") or ack_age < 1800
-                            or (row["reescalations"] or 0) >= MAX_REESCALATIONS
-                            or row["repeat_count"] >= MAX_SENDS):
-                        actions.append({"key": key, "action": "silenced_by_ack"})
-                        continue
-                    n_re = (row["reescalations"] or 0) + 1
-                    if dry_run:
-                        actions.append({"key": key, "action": "would_reescalate",
-                                        "n_re": n_re})
-                        continue
-                    if _send_alert(key, info, row["repeat_count"] + 1,
-                                   reescalation={"by": row["acked_by"] or "-"}):
-                        conn.execute(
-                            "UPDATE critical_alerts SET acked_at = NULL, "
-                            "acked_by = NULL, last_sent = now(), "
-                            "repeat_count = repeat_count + 1, "
-                            "reescalations = %s WHERE alert_key = %s", (n_re, key))
-                        logger.warning(f"[CRITICAL] RE-ESCALATED {key} "
-                                       f"(#{n_re}, prior ack by {row['acked_by']})")
-                        actions.append({"key": key, "action": "reescalated",
-                                        "n_re": n_re})
-                    else:
-                        actions.append({"key": key, "action": "reescalate_send_failed"})
+                    # ACK = RESOLVED, permanently, for this booking+condition
+                    # (P1-3, 15 Aug incident: 8 acks each bought ~35 min, then
+                    # @All resumed into an emptying room — someone left the
+                    # group to escape). A genuinely new condition is a new
+                    # alert key with new wording, never a repeat of this one.
+                    actions.append({"key": key, "action": "silenced_by_ack"})
                     continue
                 # REPEAT CAP: hard stop after MAX_SENDS fires per condition
                 if row and row["repeat_count"] >= MAX_SENDS:
@@ -490,6 +494,43 @@ def cron_critical_alerts():
 # ─────────────────────────────────────────────────────────────
 # Acknowledge (called by transfer-line-webhook on button tap)
 # ─────────────────────────────────────────────────────────────
+
+@critical_bp.route("/alerts/resolve", methods=["POST"])
+def alerts_resolve():
+    """Human truth (P1-5): 'customer collected' closes EVERY open alert
+    for the booking and blocks new ones (humanok marker row, ~2 days)."""
+    cron_secret = os.environ.get("CRON_SECRET", "")
+    if cron_secret and request.args.get("key", "") != cron_secret:
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    bid = (body.get("booking_id") or "").strip()
+    by = (body.get("resolved_by") or "team").strip()[:80]
+    if not bid:
+        return jsonify({"status": "error", "message": "no booking_id"}), 400
+    try:
+        from db import _get_pool
+        pool = _get_pool()
+        with pool.connection() as conn:
+            n = conn.execute(
+                "UPDATE critical_alerts SET cleared_at = now(), "
+                "acked_at = COALESCE(acked_at, now()), "
+                "acked_by = COALESCE(acked_by, %s) "
+                "WHERE alert_key LIKE %s AND cleared_at IS NULL "
+                "RETURNING alert_key", (by, f"%:{bid}",)).fetchall()
+            conn.execute(
+                "INSERT INTO critical_alerts (alert_key, alert_type, booking_id, "
+                "acked_at, acked_by, cleared_at) "
+                "VALUES (%s, 'human-resolved', %s, now(), %s, now()) "
+                "ON CONFLICT (alert_key) DO UPDATE SET acked_by = EXCLUDED.acked_by, "
+                "first_sent = now()",
+                (f"humanok:{bid}", bid, by))
+        logger.info(f"[CRITICAL] HUMAN-RESOLVED booking {bid} by {by} "
+                    f"(closed {len(n)} open alerts)")
+        return jsonify({"status": "resolved", "closed": len(n)}), 200
+    except Exception as e:
+        logger.error(f"[CRITICAL] resolve error: {e}")
+        return jsonify({"status": "error", "message": str(e)[:150]}), 500
+
 
 @critical_bp.route("/alerts/ack", methods=["POST"])
 def alerts_ack():
