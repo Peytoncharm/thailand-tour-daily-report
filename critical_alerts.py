@@ -83,7 +83,8 @@ def _detect_states():
             "payload->>'Name', payload->>'Last_Name', "
             "payload->>'Pickup_Location', payload->>'Dropoff_Location', "
             "payload->>'Route_Key', payload->>'Pickup_Lat', "
-            "payload->>'Pickup_Lng', payload->>'Pickup_Zone' "
+            "payload->>'Pickup_Lng', payload->>'Pickup_Zone', "
+            "payload->>'Status', payload->>'Provider_Payment_Status' "
             "FROM booking_cache WHERE tour_date = %s "
             "AND lower(coalesce(type_of_package,'')) = 'private transfer' "
             "ORDER BY pickup_ts NULLS LAST LIMIT 200",
@@ -114,7 +115,7 @@ def _detect_states():
 
     for (bid, pickup_ts, drv_code, provider_id,
          name, last_name, pickup_loc, dropoff_loc, route_key,
-         p_lat, p_lng, p_zone) in rows:
+         p_lat, p_lng, p_zone, b_status, b_pay) in rows:
         if bid in arrived_ids or pickup_ts is None:
             continue
         info = {
@@ -127,8 +128,24 @@ def _detect_states():
         }
         past_s = (now - pickup_ts).total_seconds()
         if past_s > GRACE_S:
-            info["alert_type"] = "missed-pickup"
-            states[f"missed:{bid}"] = info
+            # Alert lifecycle (15 Aug incident — 36 repeats / 8 expired acks
+            # on one completed job):
+            # TIME HORIZON: never alert a missed pickup >3h after the fact
+            if past_s > 3 * 3600:
+                continue
+            # AUTO-RESOLVE: completed or paid bookings are closed matters
+            sv = (b_status or "").strip().lower()
+            if sv in ("completed", "booking completed") or (b_pay or "").strip() == "Paid":
+                continue
+            # HONESTY (never-guess rule): with NO GPS history for the
+            # driver, arrival can never be detected — absence of tracking
+            # is NOT evidence of a missed customer. Say so ONCE.
+            if not drv_code or (drv_code or "").upper() not in latest:
+                info["alert_type"] = "missed-pickup-untracked"
+                states[f"missednt:{bid}"] = info
+            else:
+                info["alert_type"] = "missed-pickup"
+                states[f"missed:{bid}"] = info
             continue
         # silent check — only inside the active job window, tracked driver.
         # Pre-pickup silence is its OWN state (12 Aug): countdown wording,
@@ -231,7 +248,11 @@ def _driver_line(info):
     return f"{_thai_person(name)}" + (f" · 📞 {phone}" if phone else "")
 
 
-AMBER_TYPES = {"gps-not-started-amber", "feasibility-at-risk-amber"}
+AMBER_TYPES = {"gps-not-started-amber", "feasibility-at-risk-amber",
+               "missed-pickup-untracked"}
+MAX_SENDS = 3          # REPEAT CAP: max fires per booking-condition, then stop
+MAX_REESCALATIONS = 1  # an ack buys 30 min at most ONCE; missed-pickup acks
+                       # are permanent (post-hoc state can never self-clear)
 
 
 def _send_alert(alert_key, info, repeat_count, reescalation=None):
@@ -243,6 +264,8 @@ def _send_alert(alert_key, info, repeat_count, reescalation=None):
         header = "🟠 เวลาเฉียดฉิว — คนขับอาจไปรับไม่ทัน"
     elif info["alert_type"] == "feasibility-infeasible":
         header = "🔴 ไปรับไม่ทัน — ตำแหน่งคนขับตอนนี้ถึงไม่ทันเวลารับ (ต้องจัดการเดี๋ยวนี้!)"
+    elif info["alert_type"] == "missed-pickup-untracked":
+        header = "🟠 เลยเวลารับ — ไม่มีข้อมูลติดตาม ต้องเช็คด้วยคน"
     elif info["alert_type"] == "missed-pickup":
         header = "🔴 เลยเวลารับ — ยังไม่มีคนไปถึง (อาจพลาดลูกค้า!)"
     elif info["alert_type"] == "positioning-wrong-side":
@@ -281,7 +304,10 @@ def _send_alert(alert_key, info, repeat_count, reescalation=None):
                                           "mentionee": {"type": "all"}}},
         })
     accent = "#B45309" if amber else "#D02020"
-    if info["alert_type"] == "feasibility-at-risk-amber":
+    if info["alert_type"] == "missed-pickup-untracked":
+        note = ("คนขับงานนี้ไม่มีข้อมูล GPS — ระบบยืนยันการมาถึงไม่ได้ "
+                "รบกวนทีมโทรเช็คกับคนขับ/ลูกค้าโดยตรงค่ะ · เตือนครั้งเดียว")
+    elif info["alert_type"] == "feasibility-at-risk-amber":
         note = ("เตือนครั้งเดียว — ถ้าสถานการณ์แย่ลงจนไม่ทัน "
                 "จะเตือนแดง (ต้องกดรับทราบ) อัตโนมัติ")
     elif amber:
@@ -396,12 +422,15 @@ def cron_critical_alerts():
                     actions.append({"key": key, "action": "amber_single_sent"})
                     continue
                 if row and row["acked_at"]:
-                    # Re-escalation rung (12 Aug): "acknowledged" buys 30
-                    # minutes of ownership. State still dangerous after
-                    # that → re-open with mention-all, fresh ack required,
-                    # 10-min cycle resumes. Every re-open is counted.
+                    # ACK lifecycle (15 Aug rules): missed-pickup acks are
+                    # PERMANENT (the post-hoc state can never self-clear —
+                    # 8 expired acks proved it). Other reds: an ack buys 30
+                    # min, re-escalation at most ONCE, and never past the
+                    # send cap.
                     ack_age = (now - row["acked_at"]).total_seconds()
-                    if ack_age < 1800:
+                    if (key.startswith("missed") or ack_age < 1800
+                            or (row["reescalations"] or 0) >= MAX_REESCALATIONS
+                            or row["repeat_count"] >= MAX_SENDS):
                         actions.append({"key": key, "action": "silenced_by_ack"})
                         continue
                     n_re = (row["reescalations"] or 0) + 1
@@ -409,11 +438,12 @@ def cron_critical_alerts():
                         actions.append({"key": key, "action": "would_reescalate",
                                         "n_re": n_re})
                         continue
-                    if _send_alert(key, info, 1,
+                    if _send_alert(key, info, row["repeat_count"] + 1,
                                    reescalation={"by": row["acked_by"] or "-"}):
                         conn.execute(
                             "UPDATE critical_alerts SET acked_at = NULL, "
-                            "acked_by = NULL, last_sent = now(), repeat_count = 1, "
+                            "acked_by = NULL, last_sent = now(), "
+                            "repeat_count = repeat_count + 1, "
                             "reescalations = %s WHERE alert_key = %s", (n_re, key))
                         logger.warning(f"[CRITICAL] RE-ESCALATED {key} "
                                        f"(#{n_re}, prior ack by {row['acked_by']})")
@@ -421,6 +451,10 @@ def cron_critical_alerts():
                                         "n_re": n_re})
                     else:
                         actions.append({"key": key, "action": "reescalate_send_failed"})
+                    continue
+                # REPEAT CAP: hard stop after MAX_SENDS fires per condition
+                if row and row["repeat_count"] >= MAX_SENDS:
+                    actions.append({"key": key, "action": "capped"})
                     continue
                 if row and (now - row["last_sent"]).total_seconds() < REPEAT_AFTER_S:
                     actions.append({"key": key, "action": "too_soon"})
