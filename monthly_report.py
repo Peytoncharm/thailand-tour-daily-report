@@ -18,7 +18,7 @@ TRANSFER_TYPES = {"Join Transfer", "Private Transfer"}
 ORDER_FIELDS = (
     "Name,Tour_Date,Type_of_Package,Total_Amount,Net_Cost,"
     "Total_Profit_Cost,OMISE_Fee,Payment_Method,Provider_List,"
-    "Chanel_of_booking,Extra_Charge"
+    "Chanel_of_booking,Extra_Charge,Commission_Amount"
 )
 
 THAI_MONTHS = {
@@ -176,6 +176,8 @@ def _compute_bu_stats(orders):
         "net_profit": net_profit,
         "margin": margin,
         "payment": pay_stats,
+        # UTP revenue share (0 unless the period has completed UTP journeys)
+        "utp_commission": sum(_safe_float(o.get("Commission_Amount")) for o in orders),
     }
 
 
@@ -278,9 +280,19 @@ def _build_combined_section(tour_stats, transfer_stats):
         f"Income:     ฿{_fmt_amount(total_income)}",
         f"Cost:       ฿{_fmt_amount(total_cost)}",
         f"Net Profit: ฿{_fmt_amount(total_net)}",
+    ]
+
+    # UTP revenue share — lines appear ONLY when the period actually has
+    # commission, so months without it render exactly as before.
+    total_utp = tour_stats.get("utp_commission", 0) + transfer_stats.get("utp_commission", 0)
+    if total_utp > 0:
+        lines.append(f"หัก ค่าคอมมิชชั่น UTP: ฿{_fmt_amount(total_utp)}")
+        lines.append(f"กำไรสุทธิหลังหัก UTP: ฿{_fmt_amount(total_net - total_utp)}")
+
+    lines.extend([
         f"Margin:     {total_margin:.1f}%",
         "",
-    ]
+    ])
 
     # Payment mix summary line
     pay_parts = []

@@ -30,6 +30,26 @@ audit trail). Feature-flagged: `PORTAL_AUTH=on` enables it; default off.
 whole collection and has wiped this service before. Paste values in the
 Render UI only.
 
+## ⚠️ Known reporting gaps — fix BEFORE the UTP booth opens
+
+Found during the 23 Aug commission-line dry-run. Pre-existing behavior,
+deliberately not changed then; all three will bite once UTP volume starts:
+
+1. **Daily 22:30 summary lists Confirmed-created-today only, but UTP
+   commission stamps at Completed** — so the daily's "หัก ค่าคอมมิชชั่น
+   UTP" lines will rarely fire. Commission-bearing bookings surface only
+   in the monthly. Decide: include today's Completed bookings, or accept
+   monthly-only visibility.
+2. **Monthly P&L filters on `Tour_Date` only.** Transfers use
+   `Pickup_Date_Time`, which the monthly ignores — transfers largely
+   escape the monthly P&L, which means **UTP commission would too**.
+   (July 2026 had zero records with a July Tour_Date; the 1 Aug report
+   rendered "ไม่มีข้อมูล".)
+3. **On zero-booking days the daily sends nothing** — the n8n Filter
+   passes no items so the message node never runs; the "ไม่มี booking
+   วันนี้ค่ะ" message is unreachable. A silent night is indistinguishable
+   from a broken workflow.
+
 ## ⚠️ Remaining preconditions before wiring real booking data
 
 1. Rotate the placeholder accounts `utp-officer-1/2/3` to named
