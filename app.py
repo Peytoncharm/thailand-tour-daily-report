@@ -131,6 +131,15 @@ def health():
     }), 200
 
 
+@app.route("/utp-portal", methods=["GET"])
+def utp_portal():
+    """Static demo page for the U-Tapao Airport Authority design preview.
+    Hardcoded sample figures only — no CRM or data connection."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "utp_portal.html")
+    with open(path, encoding="utf-8") as f:
+        return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
 @app.route("/cron/daily-reconciliation", methods=["GET"])
 def cron_daily_reconciliation():
     """Runs reconciliation synchronously, then returns."""

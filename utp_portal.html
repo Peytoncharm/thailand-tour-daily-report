@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>U-Tapao Partner Revenue Portal — Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#10233A;
+    --navy:#16304E;
+    --paper:#EDEFF2;
+    --card:#FFFFFF;
+    --amber:#E8A317;
+    --amber-deep:#B87C06;
+    --rule:#C9CFD8;
+    --muted:#5B6B7F;
+    --ok:#2F6E4F;
+    --b2b:#B87C06;
+    --web:#2C5C8A;
+    --booth:#6B4E9E;
+    --direct:#3F7060;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper);color:var(--ink);
+    font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:0 18px 64px;}
+
+  .fids{
+    background:var(--ink);margin:0 -18px;padding:11px 18px;
+    overflow:hidden;white-space:nowrap;border-bottom:2px solid var(--amber);
+  }
+  .fids span{
+    font-family:"IBM Plex Mono",ui-monospace,monospace;
+    font-size:11.5px;letter-spacing:2.2px;color:var(--amber);text-transform:uppercase;
+  }
+  .fids .dim{color:#6E8199;}
+
+  .mast{background:var(--navy);color:#fff;margin:0 -18px 26px;padding:30px 18px 26px;}
+  .mast .eyebrow{
+    font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:2.5px;
+    color:var(--amber);text-transform:uppercase;margin-bottom:10px;
+  }
+  .mast h1{
+    font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-weight:700;
+    font-size:clamp(32px,6.4vw,52px);line-height:1.02;letter-spacing:0.4px;
+    text-transform:uppercase;margin:0 0 12px;
+  }
+  .mast p{margin:0;color:#B9C6D6;font-size:14px;max-width:62ch;}
+  .demo-tag{
+    display:inline-block;margin-top:16px;background:var(--amber);color:#3A2A02;
+    font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;
+    letter-spacing:1.6px;padding:5px 11px;text-transform:uppercase;
+  }
+
+  .meta{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--rule);
+    background:var(--card);margin-bottom:22px;}
+  .meta div{padding:14px 16px;border-right:1px solid var(--rule);}
+  .meta div:last-child{border-right:none;}
+  .meta dt{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:1.5px;
+    color:var(--muted);text-transform:uppercase;margin:0 0 5px;}
+  .meta dd{margin:0;font-weight:600;font-size:14.5px;}
+
+  /* ---- source breakdown ---- */
+  .sources{background:var(--card);border:1px solid var(--rule);margin-bottom:22px;}
+  .sources-head{padding:18px 22px 4px;}
+  .sources-head h2{margin:0 0 3px;}
+  .srow{
+    display:grid;grid-template-columns:1fr auto auto auto;gap:16px;
+    align-items:center;padding:13px 22px;border-top:1px solid #E5E9EE;
+  }
+  .srow .name{display:flex;align-items:center;gap:10px;font-size:14.5px;font-weight:500;}
+  .swatch{width:4px;height:26px;flex:none;border-radius:1px;}
+  .srow .n,.srow .g,.srow .c{
+    font-family:"IBM Plex Mono",monospace;font-size:14px;text-align:right;
+    min-width:72px;white-space:nowrap;
+  }
+  .srow .c{font-weight:600;min-width:96px;}
+  .srow .c.zero{color:var(--muted);font-weight:400;}
+  .srow .c.charged{color:var(--amber-deep);}
+  .srow-head{
+    display:grid;grid-template-columns:1fr auto auto auto;gap:16px;
+    padding:8px 22px;background:#F6F8FA;border-top:1px solid var(--rule);
+    font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:1.4px;
+    text-transform:uppercase;color:var(--muted);
+  }
+  .srow-head span:not(:first-child){text-align:right;}
+  .srow-head span:nth-child(2),.srow-head span:nth-child(3){min-width:72px;}
+  .srow-head span:nth-child(4){min-width:96px;}
+  .srow.total{background:#F6F8FA;border-top:2px solid var(--ink);font-weight:600;}
+  .srow .why{font-size:12px;color:var(--muted);font-weight:400;display:block;margin-top:1px;}
+
+  /* ---- amount due ---- */
+  .ledger{background:var(--card);border:1px solid var(--rule);padding:24px 22px;margin-bottom:20px;}
+  .due{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px;}
+  .due .cap{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:2px;
+    text-transform:uppercase;color:var(--muted);}
+  .due .cap strong{display:block;font-family:"IBM Plex Sans",sans-serif;font-size:17px;
+    letter-spacing:0;color:var(--ink);margin-top:4px;text-transform:none;}
+  .amount{
+    font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-weight:700;
+    font-size:clamp(42px,9.5vw,64px);line-height:0.9;letter-spacing:0.5px;
+    background:var(--ink);color:var(--amber);padding:10px 18px 12px;
+  }
+  .amount .cur{font-size:0.42em;letter-spacing:2px;vertical-align:top;margin-right:8px;color:#7E93AC;}
+  .settled{margin-top:16px;padding-top:14px;border-top:1px solid var(--rule);
+    display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;
+    font-size:13.5px;color:var(--muted);}
+  .settled .s-amt{font-family:"IBM Plex Mono",monospace;font-weight:600;color:var(--ok);}
+  .settled .s-amt em{font-style:normal;color:var(--muted);font-weight:400;font-size:12px;}
+
+  .provisional-note{
+    background:#FDF4E0;border:1px solid #E6CF9A;border-left:4px solid var(--amber);
+    padding:15px 17px;margin-bottom:28px;font-size:14px;color:#4A3A16;
+  }
+  .provisional-note b{display:block;font-family:"IBM Plex Mono",monospace;font-size:10.5px;
+    letter-spacing:1.5px;text-transform:uppercase;color:var(--amber-deep);
+    margin-bottom:7px;font-weight:600;}
+
+  /* ---- live today ---- */
+  .live{background:var(--ink);color:#fff;margin-bottom:22px;}
+  .live-head{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:16px 22px 12px;border-bottom:1px solid #2A3F58;flex-wrap:wrap;gap:10px;
+  }
+  .live-head h2{color:#fff;margin:0;}
+  .pulse{
+    display:inline-flex;align-items:center;gap:8px;
+    font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:2px;
+    text-transform:uppercase;color:var(--amber);
+  }
+  .pulse i{
+    width:8px;height:8px;border-radius:50%;background:var(--amber);
+    animation:beat 2.4s ease-in-out infinite;
+  }
+  @keyframes beat{0%,100%{opacity:1;}50%{opacity:.25;}}
+  @media(prefers-reduced-motion:reduce){.pulse i{animation:none;}}
+
+  .live-stats{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid #2A3F58;}
+  .live-stats div{padding:14px 22px;border-right:1px solid #2A3F58;}
+  .live-stats div:last-child{border-right:none;}
+  .live-stats dt{
+    font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:1.5px;
+    color:#7E93AC;text-transform:uppercase;margin:0 0 4px;
+  }
+  .live-stats dd{margin:0;font-family:"Barlow Condensed",sans-serif;
+    font-weight:600;font-size:26px;line-height:1;}
+
+  .feed{list-style:none;margin:0;padding:0;}
+  .feed li{
+    display:grid;grid-template-columns:64px auto 1fr auto;gap:14px;
+    align-items:center;padding:12px 22px;border-bottom:1px solid #1D3049;
+  }
+  .feed li:last-child{border-bottom:none;}
+  .feed .t{font-family:"IBM Plex Mono",monospace;font-size:13px;color:#7E93AC;}
+  .feed .r{font-size:14px;color:#DDE6EF;}
+  .feed .a{font-family:"IBM Plex Mono",monospace;font-size:14px;
+    font-weight:600;text-align:right;white-space:nowrap;}
+  .feed .a small{display:block;font-size:11px;font-weight:400;color:var(--amber);}
+  .feed .a small.none{color:#5E7085;}
+  .live-foot{padding:12px 22px;font-size:12.5px;color:#8CA0B8;border-top:1px solid #2A3F58;}
+
+  h2{font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-weight:600;font-size:23px;
+    letter-spacing:1px;text-transform:uppercase;margin:0 0 4px;}
+  .sub{color:var(--muted);font-size:13.5px;margin:0 0 14px;}
+
+  .tablecard{background:var(--card);border:1px solid var(--rule);margin-bottom:30px;overflow-x:auto;}
+  table{width:100%;border-collapse:collapse;min-width:620px;}
+  th{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:1.4px;
+    text-transform:uppercase;color:var(--muted);text-align:left;font-weight:500;
+    padding:12px 13px;border-bottom:1px solid var(--rule);background:#F6F8FA;white-space:nowrap;}
+  td{padding:11px 13px;border-bottom:1px solid #E5E9EE;font-size:14px;vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+  td.num,th.num{text-align:right;font-family:"IBM Plex Mono",monospace;white-space:nowrap;}
+  td.ref{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);white-space:nowrap;}
+  td.dash{color:#9AA7B5;text-align:right;font-family:"IBM Plex Mono",monospace;}
+  td.due-cell{font-weight:600;color:var(--amber-deep);}
+  tfoot td{background:#F6F8FA;font-weight:600;border-top:2px solid var(--ink);border-bottom:none;}
+
+  .tag{
+    display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:10px;
+    letter-spacing:1px;text-transform:uppercase;padding:3px 7px;color:#fff;white-space:nowrap;
+  }
+  .tag.b2b{background:var(--b2b);}
+  .tag.web{background:var(--web);}
+  .tag.booth{background:var(--booth);}
+  .tag.direct{background:var(--direct);}
+
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  .panel{background:var(--card);border:1px solid var(--rule);padding:20px;}
+  .panel.rule-in{border-left:4px solid var(--amber);}
+  .panel.rule-out{border-left:4px solid var(--ink);}
+  .panel h3{font-family:"Barlow Condensed",sans-serif;font-size:18px;letter-spacing:0.8px;
+    text-transform:uppercase;margin:0 0 10px;}
+  .panel ul{margin:0;padding-left:18px;}
+  .panel li{margin-bottom:7px;font-size:14px;color:#26374B;}
+  .panel li:last-child{margin-bottom:0;}
+  .two-test{background:#F6F8FA;border:1px solid var(--rule);padding:14px 16px;
+    margin-bottom:16px;font-size:14px;}
+  .two-test b{display:block;font-family:"IBM Plex Mono",monospace;font-size:10.5px;
+    letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);
+    margin-bottom:7px;font-weight:500;}
+
+  footer{margin-top:38px;padding-top:18px;border-top:1px solid var(--rule);
+    font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:1px;
+    color:var(--muted);text-transform:uppercase;line-height:1.9;}
+
+  @media(max-width:760px){
+    .meta{grid-template-columns:1fr 1fr;}
+    .meta div:nth-child(2){border-right:none;}
+    .meta div:nth-child(1),.meta div:nth-child(2){border-bottom:1px solid var(--rule);}
+    .cols{grid-template-columns:1fr;}
+    .srow,.srow-head{grid-template-columns:1fr auto auto;}
+    .srow .n,.srow-head span:nth-child(2){display:none;}
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="fids">
+    <span>U-TAPAO INTL <span class="dim">·</span> PARTNER REVENUE PORTAL <span class="dim">·</span> LIVE <span class="dim">·</span> UPDATED <span style="color:#fff">22 AUG 2026, 14:20</span> <span class="dim">·</span> OPERATOR: PEYTON &amp; CHARMED GROUP</span>
+  </div>
+
+  <div class="mast">
+    <div class="eyebrow">Concession revenue share · 10% of gross sales</div>
+    <h1>Partner Revenue<br>Portal</h1>
+    <p>Every journey Peyton &amp; Charmed carries to or from U-Tapao International Airport, shown live and labelled by where the booking came from. The revenue share applies to bookings introduced by the airport's partners; the rest is shown for completeness so the full picture is visible.</p>
+    <div class="demo-tag">Demonstration · sample figures only</div>
+  </div>
+
+  <dl class="meta">
+    <div><dt>Current period</dt><dd>August 2026, to date</dd></div>
+    <div><dt>Issued to</dt><dd>U-Tapao Airport Authority</dd></div>
+    <div><dt>Last updated</dt><dd>22 Aug 2026, 14:20</dd></div>
+    <div><dt>Period settles</dt><dd>1 Sep 2026</dd></div>
+  </dl>
+
+  <div class="live">
+    <div class="live-head">
+      <h2>Point of sale — today</h2>
+      <span class="pulse"><i></i>Live · updates as journeys complete</span>
+    </div>
+    <dl class="live-stats">
+      <div><dt>Journeys today</dt><dd>5</dd></div>
+      <div><dt>Gross today</dt><dd>฿6,412</dd></div>
+      <div><dt>Revenue share today</dt><dd>฿103.40</dd></div>
+    </dl>
+    <ul class="feed">
+      <li>
+        <span class="t">13:55</span>
+        <span><span class="tag direct">Direct</span></span>
+        <span class="r">U-Tapao → Chanthaburi City</span>
+        <span class="a">2,275.00<small class="none">no share</small></span>
+      </li>
+      <li>
+        <span class="t">11:30</span>
+        <span><span class="tag b2b">Partner</span></span>
+        <span class="r">U-Tapao → Map Ta Phut · Airline Partner A</span>
+        <span class="a">1,034.00<small>+103.40</small></span>
+      </li>
+      <li>
+        <span class="t">10:05</span>
+        <span><span class="tag booth">Booth</span></span>
+        <span class="r">U-Tapao → Rayong City</span>
+        <span class="a">931.00<small class="none">no share</small></span>
+      </li>
+      <li>
+        <span class="t">09:15</span>
+        <span><span class="tag web">Website</span></span>
+        <span class="r">U-Tapao → Ban Phe Pier</span>
+        <span class="a">1,138.00<small class="none">no share</small></span>
+      </li>
+      <li>
+        <span class="t">07:40</span>
+        <span><span class="tag booth">Booth</span></span>
+        <span class="r">U-Tapao → Pattaya</span>
+        <span class="a">1,034.00<small class="none">no share</small></span>
+      </li>
+    </ul>
+    <div class="live-foot">A journey appears here once it has been completed and paid for. Bookings taken earlier in the day for later travel are not yet listed.</div>
+  </div>
+
+  <div class="sources">
+    <div class="sources-head">
+      <h2>Where the bookings came from</h2>
+      <p class="sub">All U-Tapao journeys this month, split by booking source.</p>
+    </div>
+    <div class="srow-head">
+      <span>Source</span><span>Trips</span><span>Gross</span><span>Revenue share</span>
+    </div>
+
+    <div class="srow">
+      <span class="name"><span class="swatch" style="background:var(--b2b)"></span>
+        Airport partner — airline or agent
+        <span class="why">Introduced by U-Tapao Airport Authority</span></span>
+      <span class="n">10</span><span class="g">13,961.00</span>
+      <span class="c charged">1,396.10</span>
+    </div>
+
+    <div class="srow">
+      <span class="name"><span class="swatch" style="background:var(--web)"></span>
+        Operator website
+        <span class="why">Booked online by the passenger direct</span></span>
+      <span class="n">5</span><span class="g">10,238.00</span>
+      <span class="c zero">not chargeable</span>
+    </div>
+
+    <div class="srow">
+      <span class="name"><span class="swatch" style="background:var(--booth)"></span>
+        Terminal booth walk-up
+        <span class="why">Covered by the booth rent</span></span>
+      <span class="n">4</span><span class="g">3,930.00</span>
+      <span class="c zero">not chargeable</span>
+    </div>
+
+    <div class="srow">
+      <span class="name"><span class="swatch" style="background:var(--direct)"></span>
+        Direct enquiry — LINE or telephone
+        <span class="why">Passenger contacted the operator</span></span>
+      <span class="n">2</span><span class="g">4,085.00</span>
+      <span class="c zero">not chargeable</span>
+    </div>
+
+    <div class="srow total">
+      <span class="name" style="padding-left:14px;">All U-Tapao journeys</span>
+      <span class="n">21</span><span class="g">32,214.00</span>
+      <span class="c charged">1,396.10</span>
+    </div>
+  </div>
+
+  <div class="ledger">
+    <div class="due">
+      <div class="cap">Accruing — August 2026<strong>Provisional · settles 1 Sep</strong></div>
+      <div class="amount"><span class="cur">THB</span>1,396.10</div>
+    </div>
+    <div class="settled">
+      <span>Last settled period — July 2026 · 8 chargeable trips · gross ฿11,240.00</span>
+      <span class="s-amt">฿1,124.00 <em>paid 15 Aug</em></span>
+    </div>
+  </div>
+
+  <div class="provisional-note">
+    <b>Why this figure is marked provisional</b>
+    Only completed and paid journeys are counted. A booking joins the totals after the trip has run and payment has cleared, so figures move upward through the month and are confirmed on the 1st. Cancellations and refunds never enter them.
+  </div>
+
+  <h2>Every journey — August, to date</h2>
+  <p class="sub">All 21 U-Tapao trips this month, whatever the source. The revenue share column shows a dash where no share is due.</p>
+
+  <div class="tablecard">
+    <table>
+      <thead>
+        <tr>
+          <th>Reference</th><th>Date</th><th>Route</th>
+          <th>Source</th><th>Booked via</th>
+          <th class="num">Gross</th><th class="num">10%</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="ref">UTP-B2B-0001</td><td>02 Aug</td><td>U-Tapao → Pattaya</td><td><span class="tag b2b">Partner</span></td><td>Airline Partner A</td><td class="num">1,149.00</td><td class="num due-cell">114.90</td></tr>
+        <tr><td class="ref">UTP-WEB-0044</td><td>03 Aug</td><td>U-Tapao → Pattaya</td><td><span class="tag web">Website</span></td><td>Operator website</td><td class="num">1,034.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-B2B-0002</td><td>04 Aug</td><td>U-Tapao → Map Ta Phut</td><td><span class="tag b2b">Partner</span></td><td>Travel Agent B</td><td class="num">1,034.00</td><td class="num due-cell">103.40</td></tr>
+        <tr><td class="ref">UTP-BTH-0018</td><td>05 Aug</td><td>U-Tapao → Pattaya</td><td><span class="tag booth">Booth</span></td><td>Terminal walk-up</td><td class="num">1,034.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-B2B-0003</td><td>06 Aug</td><td>U-Tapao → Rayong City</td><td><span class="tag b2b">Partner</span></td><td>Airline Partner A</td><td class="num">1,034.00</td><td class="num due-cell">103.40</td></tr>
+        <tr><td class="ref">UTP-WEB-0051</td><td>08 Aug</td><td>U-Tapao → Koh Chang</td><td><span class="tag web">Website</span></td><td>Operator website</td><td class="num">4,602.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-B2B-0004</td><td>09 Aug</td><td>U-Tapao → Ban Phe Pier</td><td><span class="tag b2b">Partner</span></td><td>Travel Agent B</td><td class="num">1,264.00</td><td class="num due-cell">126.40</td></tr>
+        <tr><td class="ref">UTP-BTH-0021</td><td>10 Aug</td><td>U-Tapao → Rayong City</td><td><span class="tag booth">Booth</span></td><td>Terminal walk-up</td><td class="num">931.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-B2B-0005</td><td>11 Aug</td><td>U-Tapao → Pattaya</td><td><span class="tag b2b">Partner</span></td><td>Airline Partner A</td><td class="num">1,149.00</td><td class="num due-cell">114.90</td></tr>
+        <tr><td class="ref">UTP-WEB-0058</td><td>12 Aug</td><td>U-Tapao → Ban Phe Pier</td><td><span class="tag web">Website</span></td><td>Operator website</td><td class="num">1,138.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-DIR-0009</td><td>13 Aug</td><td>U-Tapao → Sriracha</td><td><span class="tag direct">Direct</span></td><td>LINE enquiry</td><td class="num">1,810.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-B2B-0006</td><td>14 Aug</td><td>U-Tapao → Laem Chabang</td><td><span class="tag b2b">Partner</span></td><td>Travel Agent C</td><td class="num">1,896.00</td><td class="num due-cell">189.60</td></tr>
+        <tr><td class="ref">UTP-BTH-0025</td><td>15 Aug</td><td>U-Tapao → Map Ta Phut</td><td><span class="tag booth">Booth</span></td><td>Terminal walk-up</td><td class="num">931.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-B2B-0007</td><td>16 Aug</td><td>U-Tapao → Sriracha</td><td><span class="tag b2b">Partner</span></td><td>Travel Agent C</td><td class="num">2,011.00</td><td class="num due-cell">201.10</td></tr>
+        <tr><td class="ref">UTP-B2B-0008</td><td>18 Aug</td><td>U-Tapao → Chonburi / Amata</td><td><span class="tag b2b">Partner</span></td><td>Airline Partner A</td><td class="num">2,241.00</td><td class="num due-cell">224.10</td></tr>
+        <tr><td class="ref">UTP-WEB-0063</td><td>19 Aug</td><td>U-Tapao → Bangkok</td><td><span class="tag web">Website</span></td><td>Operator website</td><td class="num">2,430.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-BTH-0029</td><td>20 Aug</td><td>U-Tapao → Pattaya</td><td><span class="tag booth">Booth</span></td><td>Terminal walk-up</td><td class="num">1,034.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-B2B-0009</td><td>21 Aug</td><td>U-Tapao → Pattaya</td><td><span class="tag b2b">Partner</span></td><td>Travel Agent B</td><td class="num">1,149.00</td><td class="num due-cell">114.90</td></tr>
+        <tr><td class="ref">UTP-DIR-0011</td><td>22 Aug</td><td>U-Tapao → Chanthaburi City</td><td><span class="tag direct">Direct</span></td><td>Telephone enquiry</td><td class="num">2,275.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-WEB-0067</td><td>23 Aug</td><td>U-Tapao → Pattaya</td><td><span class="tag web">Website</span></td><td>Operator website</td><td class="num">1,034.00</td><td class="dash">—</td></tr>
+        <tr><td class="ref">UTP-B2B-0010</td><td>24 Aug</td><td>U-Tapao → Map Ta Phut</td><td><span class="tag b2b">Partner</span></td><td>Airline Partner A</td><td class="num">1,034.00</td><td class="num due-cell">103.40</td></tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="5">Total — 21 journeys, of which 10 carry a revenue share</td>
+          <td class="num">32,214.00</td>
+          <td class="num due-cell">1,396.10</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <h2>How the revenue share is applied</h2>
+  <p class="sub">The rule applied to every journey above, published so the calculation can be checked.</p>
+
+  <div class="two-test">
+    <b>Chargeable test — all conditions must be true</b>
+    A journey carries the 10% revenue share when it <strong>starts or ends at U-Tapao International Airport</strong>, the customer was <strong>introduced by an airline or travel agent partner of the airport</strong> — recorded in writing at the time of introduction — and the <strong>journey has been completed and paid for</strong>.
+  </div>
+
+  <div class="cols">
+    <div class="panel rule-in">
+      <h3>Carries the 10%</h3>
+      <ul>
+        <li>Bookings from airline partners introduced by the airport</li>
+        <li>Bookings from travel agent partners introduced by the airport</li>
+        <li>Both directions — to and from the airport</li>
+      </ul>
+    </div>
+    <div class="panel rule-out">
+      <h3>Shown, but no share due</h3>
+      <ul>
+        <li><strong>Terminal booth walk-ups</strong> — the booth rent already pays for this traffic</li>
+        <li><strong>Operator website</strong> — passengers who found and booked the operator directly</li>
+        <li><strong>LINE and telephone</strong> — direct enquiries to the operator</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:18px;">
+    <h3>Information deliberately not shown</h3>
+    <p style="margin:0 0 10px;font-size:14px;color:#26374B;">The portal covers U-Tapao journeys only. It carries no passenger names or contact details, no driver identities, no supplier or driver costs, no margin, and no records from the operator's other routes or business units.</p>
+    <p style="margin:0;font-size:14px;color:#26374B;">The page refreshes through the day from completed, paid bookings. The month's figure is confirmed on the 1st and becomes the amount payable; the settled figure, not the running total, is what falls due.</p>
+  </div>
+
+  <footer>
+    Peyton &amp; Charmed Group · Transfer business unit<br>
+    Demonstration layout — all figures are illustrative and do not represent trading results<br>
+    Prepared for internal review, 22 August 2026
+  </footer>
+
+</div>
+</body>
+</html>
