@@ -1,5 +1,16 @@
 # UTP Partner Revenue Portal — Build Notes
 
+## Commission rule (canonical, owner-confirmed 23 Aug 2026)
+Zoho function `calculateUTPCommission` sets `UTP_Commission_Eligible` and
+`Commission_Amount` on Koh Chang Orders. Yes + 10% of
+`Total_Price_Currency` when the route touches U-Tapao (u-tapao / utapao /
+whole-word UTP / อู่ตะเภา, pickup or dropoff) AND Status = Completed.
+ALL channels pay — booth, website, LINE, phone, B2B. Partner fields
+(`Partner_Introduced_By`, `Partner_Code`, `Partner_Name`) are tracking
+data only; they do not gate the money. Refund / any non-Completed status
+resets to No + 0. Trigger: workflow rule "UTP Commission Calculation",
+Create or Edit, no repeat-on-edit. All three paths live-tested 23 Aug.
+
 ## Current state (23 Aug 2026)
 `/utp-portal/<24-char token>` serves `utp_portal.html` — a **static demo page
 with hardcoded sample figures**. No Zoho connection, no data feed. Shown to
