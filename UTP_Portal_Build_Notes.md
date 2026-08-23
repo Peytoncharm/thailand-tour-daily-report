@@ -50,6 +50,21 @@ deliberately not changed then; all three will bite once UTP volume starts:
    วันนี้ค่ะ" message is unreachable. A silent night is indistinguishable
    from a broken workflow.
 
+## ⚠️ Driver Matching V1 — known matching gaps, fix before high season
+
+Found 23 Aug during the UTP→Rayong dry-run. Both pre-date UTP and both
+quietly shrink the candidate pool on EVERY route:
+
+1. **200-record search cap, no pagination**: "Find Candidate Drivers1"
+   fetches one page of 200 from the Providers search. Rayong+Pattaya
+   alone matches 258 drivers — 58 can never become candidates on that
+   pairing, silently. Needs pagination (or narrower criteria).
+2. **Non-standard Car_Type values rank to 0 and drop**: 32 drivers with
+   values like `SUV`, `VAN`, `MPV`, `EV`, `V 9 Van หน้าสั้น` fail the
+   vehicle-rank classifier and are excluded from every pool. Needs a
+   Car_Type data cleanup to the 6 canonical values (or a tolerant
+   classifier).
+
 ## ⚠️ Remaining preconditions before wiring real booking data
 
 1. Rotate the placeholder accounts `utp-officer-1/2/3` to named
