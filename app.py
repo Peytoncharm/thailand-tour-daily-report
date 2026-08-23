@@ -131,13 +131,18 @@ def health():
     }), 200
 
 
-@app.route("/utp-portal", methods=["GET"])
+@app.route("/utp-portal/9h31xbcopddahpjctsklmf8s", methods=["GET"])
 def utp_portal():
     """Static demo page for the U-Tapao Airport Authority design preview.
-    Hardcoded sample figures only — no CRM or data connection."""
+    Hardcoded sample figures only — no CRM or data connection.
+    Obscure path + noindex is NOT authentication — before wiring real
+    booking data, see UTP_Portal_Build_Notes.md."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "utp_portal.html")
     with open(path, encoding="utf-8") as f:
-        return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+        return f.read(), 200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "X-Robots-Tag": "noindex, nofollow",
+        }
 
 
 @app.route("/cron/daily-reconciliation", methods=["GET"])
