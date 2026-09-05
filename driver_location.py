@@ -25,6 +25,55 @@ tracking_sessions = {}
 
 SESSION_TTL_HOURS = 8
 
+# A tracking link is only meaningful around its pickup. The T-6hr link lives
+# on in the driver's LINE history for months, so re-opening one for a finished
+# job (or a link-preview crawler fetching it) must NOT create a session and
+# start the 5-minute watchdog — that nudged drivers about jobs from May in
+# August/September ("คนขับเปิดลิงก์แต่ยังไม่ได้แชร์ตำแหน่ง", 5 Sep 2026 incident).
+STALE_JOB_AFTER_HOURS = 6
+CLOSED_STATUSES = {"completed", "refunded", "rejected", "cancelled", "canceled"}
+
+
+def _parse_pickup_iso(pdt_iso):
+    """'2026-05-20T08:00:00+07:00' -> aware datetime, or None."""
+    if not pdt_iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(pdt_iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ICT)
+    return dt
+
+
+def job_is_over(pickup_datetime_iso, status=None, now=None):
+    """True when the booking is closed in Zoho, or its pickup time passed more
+    than STALE_JOB_AFTER_HOURS ago. Unknown pickup time -> not over (fail open,
+    so a live job with bad data still gets its watchdog)."""
+    if (status or "").strip().lower() in CLOSED_STATUSES:
+        return True
+    pickup = _parse_pickup_iso(pickup_datetime_iso)
+    if pickup is None:
+        return False
+    now = now or datetime.now(ICT)
+    return pickup < now - timedelta(hours=STALE_JOB_AFTER_HOURS)
+
+
+def _stale_link_page(customer_name=""):
+    """Plain page shown instead of the share page for a finished job."""
+    who = f" ({customer_name})" if customer_name else ""
+    return (
+        "<!doctype html><html lang='th'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>งานนี้จบแล้ว</title></head>"
+        "<body style='font-family:sans-serif;padding:32px;text-align:center;color:#333'>"
+        "<h2>✅ งานนี้จบไปแล้วค่ะ</h2>"
+        f"<p>ลิงก์นี้เป็นของงานเก่า{who} ไม่ต้องทำอะไรนะคะ</p>"
+        "<p style='color:#888'>ทีมงาน Peyton &amp; Charmed</p>"
+        "</body></html>"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -128,7 +177,7 @@ def _fetch_booking_and_provider(booking_id):
         "customer_name": None, "pickup_time": None, "line_user_id": None,
         "pickup_datetime_iso": None, "pickup_location": None,
         "dropoff_location": None, "transfer_route": None, "provider_name": None,
-        "provider_id": None, "type_of_package": None,
+        "provider_id": None, "type_of_package": None, "status": None,
     }
     try:
         # Stage 1.2 A2: cache-first booking read. get_booking() itself
@@ -153,6 +202,7 @@ def _fetch_booking_and_provider(booking_id):
         result["dropoff_location"] = (booking.get("Dropoff_Location") or "").strip()
         result["transfer_route"] = (booking.get("Transfer_Route") or "").strip()
         result["type_of_package"] = (booking.get("Type_of_Package") or "").strip()
+        result["status"] = (booking.get("Status") or "").strip()
 
         provider_list = booking.get("Provider_List")
         if not provider_list or not isinstance(provider_list, dict):
@@ -210,6 +260,10 @@ def _watchdog_check(booking_id):
         return  # First ping arrived, normal flow happened
     if session.get("watchdog_fired"):
         return  # Already sent alert
+    if job_is_over(session.get("pickup_datetime_iso"), session.get("status")):
+        session["watchdog_fired"] = True
+        logger.info(f"[DRIVER-TRACK] Watchdog skipped for {booking_id}: job already over")
+        return
 
     session["watchdog_fired"] = True
     customer = session.get("customer_name") or "(unknown)"
@@ -265,6 +319,14 @@ def driver_share_page(booking_id):
         # Look up booking info from Zoho
         info = _fetch_booking_and_provider(booking_id)
 
+        # Finished job: no session, no watchdog, no nudge to the driver.
+        if job_is_over(info.get("pickup_datetime_iso"), info.get("status"), now):
+            logger.info(
+                f"[DRIVER-TRACK] Stale link opened for booking={booking_id} "
+                f"(pickup={info.get('pickup_datetime_iso')}, status={info.get('status')}) — ignored"
+            )
+            return _stale_link_page(info.get("customer_name") or ""), 200
+
         tracking_sessions[booking_id] = {
             "lat": None,
             "lng": None,
@@ -282,6 +344,7 @@ def driver_share_page(booking_id):
             "provider_name": info.get("provider_name") or "",
             "provider_id": info.get("provider_id"),
             "type_of_package": info.get("type_of_package") or "",
+            "status": info.get("status") or "",
             "active": True,
             "notified": False,
             "team_notified": False,
