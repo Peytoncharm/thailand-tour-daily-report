@@ -57,6 +57,21 @@ RENDER_SERVICES = [
     },
 ]
 
+# Services whose Zoho login is checked each morning. A service can be UP
+# while its Zoho refresh token is revoked — that went unnoticed ~2 weeks in
+# Sep 2026. Each /health/zoho does a real token refresh and returns
+# {"zoho_login": true/false}; this service's own login is checked directly.
+ZOHO_LOGIN_ENDPOINTS = [
+    {
+        "name": "transfer-line-webhook",
+        "url": "https://transfer-line-webhook.onrender.com/health/zoho",
+    },
+    {
+        "name": "tour-line-webhook",
+        "url": "https://tour-line-webhook.onrender.com/health/zoho",
+    },
+]
+
 # cron-job.org keywords for watchdog crons
 WATCHDOG_CRON_KEYWORDS = ["watchdog", "approach"]
 
@@ -142,6 +157,59 @@ def ping_render_services():
     with ThreadPoolExecutor(max_workers=len(RENDER_SERVICES)) as pool:
         futures = {pool.submit(_ping_one, svc): svc for svc in RENDER_SERVICES}
         results = [f.result() for f in as_completed(futures)]
+    results.sort(key=lambda r: r["name"])
+    return results
+
+
+def _check_own_zoho_login():
+    """Real refresh-token exchange for this service's TH_ZOHO_* login.
+    Bypasses zoho_thailand's cached access token, which would hide a
+    revoked refresh token."""
+    from zoho_thailand import (
+        TH_ZOHO_CLIENT_ID, TH_ZOHO_CLIENT_SECRET, TH_ZOHO_REFRESH_TOKEN,
+        ZOHO_TOKEN_URL,
+    )
+    try:
+        resp = requests.post(ZOHO_TOKEN_URL, params={
+            "refresh_token": TH_ZOHO_REFRESH_TOKEN,
+            "client_id": TH_ZOHO_CLIENT_ID,
+            "client_secret": TH_ZOHO_CLIENT_SECRET,
+            "grant_type": "refresh_token",
+        }, timeout=15)
+        data = resp.json()
+        if "access_token" in data:
+            return True
+        logger.error(f"[HEALTH] Own Zoho login failed: {data.get('error')}")
+        return False
+    except Exception as e:
+        logger.error(f"[HEALTH] Own Zoho login check error: {e}")
+        return False
+
+
+def _check_zoho_endpoint(svc):
+    """Returns True/False from a service's /health/zoho, or None if the
+    endpoint could not be read (service down, or endpoint not deployed)."""
+    try:
+        resp = requests.get(svc["url"], timeout=30)
+        if resp.status_code != 200:
+            return None
+        ok = resp.json().get("zoho_login")
+        return ok if isinstance(ok, bool) else None
+    except Exception as e:
+        logger.error(f"[HEALTH] Zoho check failed for {svc['name']}: {e}")
+        return None
+
+
+def check_zoho_logins():
+    """Zoho login state per service, in parallel.
+    Returns [{"name", "ok": True/False/None}] sorted by name."""
+    results = [{"name": "thailand-tour-daily-report",
+                "ok": _check_own_zoho_login()}]
+    with ThreadPoolExecutor(max_workers=len(ZOHO_LOGIN_ENDPOINTS)) as pool:
+        futures = {pool.submit(_check_zoho_endpoint, svc): svc
+                   for svc in ZOHO_LOGIN_ENDPOINTS}
+        for f in as_completed(futures):
+            results.append({"name": futures[f]["name"], "ok": f.result()})
     results.sort(key=lambda r: r["name"])
     return results
 
@@ -290,6 +358,7 @@ def build_health_message():
     # Gather data
     wf_status, wf_err = fetch_n8n_workflow_status()
     render_results = ping_render_services()
+    zoho_results = check_zoho_logins()
     exec_summary = fetch_n8n_exec_summary()
     n8n_errors, err_fetch_err = fetch_n8n_errors()
     watchdog_crons, wd_err = fetch_watchdog_cron_status()
@@ -329,6 +398,18 @@ def build_health_message():
             )
         else:
             lines.append(f"\u274c {svc['name']} \u2014 DOWN")
+            alerts += 1
+
+    # ── Zoho Login ──
+    lines.append("\n\U0001f511 Zoho Login:")
+    for z in zoho_results:
+        if z["ok"] is True:
+            lines.append(f"\u2705 {z['name']}")
+        elif z["ok"] is False:
+            lines.append(f"\u274c {z['name']} \u2014 Zoho login FAILED")
+            alerts += 1
+        else:
+            lines.append(f"\u26a0\ufe0f {z['name']} \u2014 \u0e15\u0e23\u0e27\u0e08\u0e2a\u0e2d\u0e1a\u0e44\u0e21\u0e48\u0e44\u0e14\u0e49")
             alerts += 1
 
     # ── Execution Summary (24hr) ──
