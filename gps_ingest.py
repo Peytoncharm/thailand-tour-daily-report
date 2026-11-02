@@ -17,9 +17,22 @@ provider list cached in memory, refreshed hourly.
 Position store is in-memory (ring buffer of ~200 points per code).
 Render restarts wipe it — acceptable for V1, refills within a minute.
 
+Privacy window (2 Nov 2026, Orathai decision — PDPA): a ping is STORED
+only while the driver has an open job window —
+    20:00 ICT the day before pickup  →  pickup + JOB_WINDOW_AFTER_H
+for a Confirmed Private Transfer assigned to that driver (booking_cache).
+Outside a window the ping is answered 200 and DROPPED: not in memory,
+not in Postgres, not written back to Zoho. Exception: the install
+verify page opens a 2-hour window for that code so the team can see the
+first dot. Fail-OPEN: if the cache/DB cannot be read, the ping is kept
+(losing a job's tracking is worse than keeping one extra point).
+Env GPS_PRIVACY_WINDOW=off disables the gate (emergency switch only).
+
 Env vars:
   GPS_INGEST_SECRET  — random path token for the ingest URL
   CRON_SECRET        — reused to protect the /gps/status debug route
+  GPS_PRIVACY_WINDOW — "on" (default) / "off"
+  JOB_WINDOW_AFTER_H — hours after pickup the window stays open (default 8)
 """
 
 import logging
@@ -44,6 +57,22 @@ PROVIDER_CACHE_TTL = 3600   # refresh provider-code list hourly
 CACHE_MISS_RETRY_SECONDS = 60  # at most one forced refresh per minute
 ZOHO_WRITEBACK_SECONDS = 300   # booking GPS fields at most every 5 min
 BOOKING_LOOKUP_TTL = 300
+
+# Privacy window (see module docstring)
+GPS_PRIVACY_WINDOW = (os.environ.get("GPS_PRIVACY_WINDOW", "on").strip().lower()
+                      not in ("off", "0", "false", "no"))
+JOB_WINDOW_OPEN_HHMM = (20, 0)                       # 20:00 ICT the day before pickup
+JOB_WINDOW_AFTER_H = float(os.environ.get("JOB_WINDOW_AFTER_H", "8"))
+VERIFY_WINDOW_SECONDS = 2 * 3600                     # install-verify exception
+WINDOW_CACHE_TTL = 300                               # re-check job window every 5 min
+DROP_LOG_EVERY = 60                                  # log one dropped ping per code per hour
+
+# code(upper) → {"until": dt(utc)|None, "checked_at": dt(utc)}
+_window_cache = {}
+# code(upper) → dt(utc) until which pings are accepted for install-verify
+VERIFY_OPEN = {}
+# code(upper) → dt(utc) of last "dropped" log line (log throttle)
+_drop_logged = {}
 
 # ─────────────────────────────────────────────────────────────
 # In-memory state
@@ -84,7 +113,8 @@ def _refresh_providers(force=False):
         records = zoho_get_records(
             "Providers",
             fields="id,Name,Provider_Code,Outsourced_Agent,Line_User_ID,"
-                   "Phone_1,Car_Model,Car_Colour,Vehicle_Registration",
+                   "Phone_1,Car_Model,Car_Colour,Vehicle_Registration,"
+                   "Tracker_Installed",
             max_pages=10,
         )
     except Exception as e:
@@ -105,7 +135,9 @@ def _refresh_providers(force=False):
                  "phone": (r.get("Phone_1") or "").strip(),
                  "car_model": (r.get("Car_Model") or "").strip(),
                  "car_colour": (r.get("Car_Colour") or "").strip(),
-                 "car_registration": (r.get("Vehicle_Registration") or "").strip()}
+                 "car_registration": (r.get("Vehicle_Registration") or "").strip(),
+                 "tracker_installed": bool(r.get("Tracker_Installed")),
+                 "outsourced": bool(r.get("Outsourced_Agent"))}
         by_code[code] = entry
         by_id[pid] = entry
 
@@ -200,6 +232,73 @@ def _writeback_worker(code: str, provider_id: str, lat: float, lng: float):
             )
     except Exception as e:
         logger.error(f"[GPS-INGEST] Write-back error for {code}: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# Privacy window
+# ─────────────────────────────────────────────────────────────
+
+def _job_window_until(code: str):
+    """UTC datetime until which this driver's CURRENT job window is open,
+    or None when no window is open right now. Reads booking_cache only
+    (0 Zoho). Raises on DB trouble so the caller can fail OPEN."""
+    from db import _get_pool
+    pool = _get_pool()
+    if pool is None:
+        raise RuntimeError("no DB pool")
+    now_ict = datetime.now(ICT)
+    days = [(now_ict + timedelta(days=d)).strftime("%Y-%m-%d") for d in (-1, 0, 1)]
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT pickup_ts FROM booking_cache "
+            "WHERE upper(coalesce(driver_id,'')) = %s "
+            "AND tour_date = ANY(%s::date[]) "
+            "AND lower(coalesce(status,'')) = 'confirmed' "
+            "AND lower(coalesce(type_of_package,'')) = 'private transfer' "
+            "AND pickup_ts IS NOT NULL",
+            (code, days)).fetchall()
+    best = None
+    for (pickup_ts,) in rows:
+        p_ict = pickup_ts.astimezone(ICT)
+        opens = (p_ict - timedelta(days=1)).replace(
+            hour=JOB_WINDOW_OPEN_HHMM[0], minute=JOB_WINDOW_OPEN_HHMM[1],
+            second=0, microsecond=0)
+        closes = p_ict + timedelta(hours=JOB_WINDOW_AFTER_H)
+        if opens <= now_ict <= closes:
+            if best is None or closes > best:
+                best = closes
+    return best.astimezone(timezone.utc) if best else None
+
+
+def in_job_window(code: str) -> tuple:
+    """(accept: bool, reason: str). Cached per code for WINDOW_CACHE_TTL.
+    reason ∈ {"off", "verify", "job", "none", "fail-open"}."""
+    code = (code or "").strip().upper()
+    if not GPS_PRIVACY_WINDOW:
+        return True, "off"
+    now = _now_utc()
+    v_until = VERIFY_OPEN.get(code)
+    if v_until and now < v_until:
+        return True, "verify"
+    c = _window_cache.get(code)
+    if c and (now - c["checked_at"]).total_seconds() < WINDOW_CACHE_TTL:
+        until = c["until"]
+    else:
+        try:
+            until = _job_window_until(code)
+        except Exception as e:
+            logger.warning(f"[GPS-WINDOW] {code}: window lookup failed, fail-open: {e}")
+            return True, "fail-open"
+        _window_cache[code] = {"until": until, "checked_at": now}
+    if until and now < until:
+        return True, "job"
+    return False, "none"
+
+
+def open_verify_window(code: str):
+    """Install-verify exception: accept this code's pings for 2 h."""
+    code = (code or "").strip().upper()
+    VERIFY_OPEN[code] = _now_utc() + timedelta(seconds=VERIFY_WINDOW_SECONDS)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -304,6 +403,17 @@ def gps_ingest(secret):
         return "", 200  # accept-and-drop: don't make the app retry garbage
 
     now = _now_utc()
+
+    # Privacy window gate — outside a job window the ping is answered 200
+    # (so the app never retries) and DROPPED everywhere.
+    accept, why = in_job_window(device_id)
+    if not accept:
+        last = _drop_logged.get(device_id)
+        if last is None or (now - last).total_seconds() >= DROP_LOG_EVERY * 60:
+            _drop_logged[device_id] = now
+            logger.info(f"[GPS-WINDOW] {device_id}: outside job window — ping dropped")
+        return "", 200
+
     entry = POSITIONS.get(device_id)
     if entry and (now - entry["last_seen"]).total_seconds() < FLOOD_SECONDS:
         return "", 200  # flood guard: accept, ignore
@@ -440,6 +550,7 @@ def gps_verify(code):
     entry_meta = _lookup_code(code)
     if not entry_meta:
         return f"unknown provider code: {code}", 404
+    open_verify_window(code)   # privacy-window exception: 2 h for install checks
     return _VERIFY_PAGE.format(code=code, name=entry_meta["name"],
                                key=cron_secret), 200
 
@@ -461,12 +572,17 @@ def gps_status(code):
             return {"enabled": False, "error": str(e)[:80]}
 
     code = (code or "").strip().upper()
+    meta = _lookup_code(code)
+    win_ok, win_why = in_job_window(code)
+    window = {"enabled": GPS_PRIVACY_WINDOW, "accepting": win_ok, "reason": win_why,
+              "tracker_installed": bool(meta and meta.get("tracker_installed"))}
     entry = POSITIONS.get(code)
     if not entry:
         return jsonify({
             "code": code,
             "tracking": False,
-            "known_provider": _lookup_code(code) is not None,
+            "known_provider": meta is not None,
+            "window": window,
             "db": _db_section(code),
         }), 200
 
@@ -481,5 +597,6 @@ def gps_status(code):
         "batt": entry["batt"],
         "last_point": last,
         "last_writeback_utc": entry["last_writeback"].isoformat() if entry["last_writeback"] else None,
+        "window": window,
         "db": _db_section(code),
     }), 200
