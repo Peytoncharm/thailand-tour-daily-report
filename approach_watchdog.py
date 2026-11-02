@@ -36,6 +36,12 @@ DRIVER_OPS_LINE_GROUP_ID = os.environ.get(
 )
 TRANSFER_LINE_TOKEN = os.environ.get("TRANSFER_LINE_TOKEN", "")
 
+# Traccar-first switch (2 Nov 2026): when "on", drivers with
+# Tracker_Installed get NO T-6 browser link here — /cron/traccar-check
+# covers them. Default off until that cron is scheduled + verified.
+TRACCAR_FIRST = (os.environ.get("TRACCAR_FIRST", "off").strip().lower()
+                 in ("on", "1", "true", "yes"))
+
 # DM V1 webhook (workflow 9XvP8N37aj1D5br0)
 DM_WEBHOOK_URL = "https://tourtransfer.app.n8n.cloud/webhook/driver-matching"
 
@@ -263,7 +269,7 @@ def _fetch_provider(provider_id: str):
         resp = requests.get(
             f"{ZOHO_API_BASE}/Providers/{provider_id}",
             headers={"Authorization": f"Zoho-oauthtoken {token}"},
-            params={"fields": "id,Name,Line_User_ID,Phone_1,Outsourced_Agent"},
+            params={"fields": "id,Name,Line_User_ID,Phone_1,Outsourced_Agent,Tracker_Installed"},
             timeout=10,
         )
         if resp.status_code != 200:
@@ -571,6 +577,7 @@ def approach_send():
     skipped_outsourced = 0
     skipped_no_uid = 0
     skipped_guard = 0
+    skipped_tracker = 0
     errors = 0
     seen_ids = set()
 
@@ -632,6 +639,20 @@ def approach_send():
                 "is Outsourced_Agent"
             )
             skipped_outsourced += 1
+            continue
+
+        # Traccar-first (2 Nov 2026): app drivers are handled by
+        # /cron/traccar-check (T-6/T-3/T-1 cards + nudges) — no browser
+        # link for them. Env-gated so it only switches once the new cron
+        # is scheduled and verified. Flag set so this never re-fires.
+        if TRACCAR_FIRST and provider.get("Tracker_Installed") is True:
+            logger.info(
+                f"[APPROACH-SEND] Skipped {bid} — provider {prov_name} "
+                "has Traccar (handled by traccar-check)"
+            )
+            if not dry_run:
+                _flag_record(bid, "Approach_Link_Sent", "Yes")
+            skipped_tracker += 1
             continue
 
         pickup_hhmm = pickup_dt.strftime("%H:%M")
@@ -701,7 +722,7 @@ def approach_send():
     logger.info(
         f"[APPROACH-SEND] dry_run={dry_run} sent={sent} "
         f"candidates={len(candidates)} outsourced={skipped_outsourced} "
-        f"no_uid={skipped_no_uid} guard={skipped_guard} errors={errors}"
+        f"no_uid={skipped_no_uid} guard={skipped_guard} tracker={skipped_tracker} errors={errors}"
     )
 
     # ── Customer tracking email (~45 min before pickup), same pass ──
@@ -720,6 +741,8 @@ def approach_send():
         "skipped_outsourced": skipped_outsourced,
         "skipped_no_uid": skipped_no_uid,
         "skipped_guard": skipped_guard,
+        "skipped_tracker": skipped_tracker,
+        "traccar_first": TRACCAR_FIRST,
         "errors": errors,
         "customer_email": {k: v for k, v in email_stats.items()
                            if dry_run or k != "candidates"},

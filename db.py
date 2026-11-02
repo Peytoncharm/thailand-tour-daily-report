@@ -405,7 +405,9 @@ def db_status(driver_id: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 _PURGES = [
-    ("driver_positions", "DELETE FROM driver_positions WHERE ts < now() - interval '30 days'"),
+    # 7 days (2 Nov 2026, PDPA decision) — was 30
+    ("driver_positions", "DELETE FROM driver_positions WHERE ts < now() - interval '7 days'"),
+    ("driver_latest",    "DELETE FROM driver_latest WHERE ts < now() - interval '7 days'"),
     ("eta_history",      "DELETE FROM eta_history WHERE computed_at < now() - interval '30 days'"),
     ("alert_log",        "DELETE FROM alert_log WHERE sent_at < now() - interval '90 days'"),
     ("critical_alerts",  "DELETE FROM critical_alerts WHERE first_sent < now() - interval '90 days'"),
