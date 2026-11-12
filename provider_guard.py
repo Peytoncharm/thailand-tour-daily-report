@@ -89,6 +89,24 @@ def is_join_transfer(booking):
     return pkg != "Private Transfer"
 
 
+def is_outsourced_provider(provider_id=None):
+    """True when the Zoho Provider has Outsourced_Agent = true (Garfield
+    and any future external partner). They run their own drivers, so no
+    GPS / approach / roll-call / watchdog traffic — same NEVER tier as
+    KCE/SWB, but driven by the Zoho flag instead of a hard-coded list
+    (rule by Orathai, 12 Nov 2026). Returns (outsourced, name)."""
+    if not provider_id:
+        return False, ""
+    try:
+        from gps_ingest import provider_entry_for_id   # lazy: avoid import cycle
+        e = provider_entry_for_id(str(provider_id)) or {}
+    except Exception:
+        return False, ""
+    if e.get("outsourced"):
+        return True, e.get("name") or str(provider_id)
+    return False, ""
+
+
 def should_block(provider_id=None, line_user_id=None, booking=None):
     """Main guard. Returns (blocked: bool, reason: str).
     Call before any automated LINE push to a provider.
@@ -102,6 +120,11 @@ def should_block(provider_id=None, line_user_id=None, booking=None):
     if booking and is_join_transfer(booking):
         pkg = (booking.get("Type_of_Package") or "").strip()
         return True, f"Non-Private Transfer: {pkg}"
+
+    # Check 3: Outsourced partner (Zoho Outsourced_Agent = true)
+    outsourced, name = is_outsourced_provider(provider_id)
+    if outsourced:
+        return True, f"Outsourced partner: {name}"
 
     return False, ""
 

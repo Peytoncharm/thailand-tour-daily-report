@@ -203,6 +203,9 @@
   }
 
   function signal(bk) {
+    // Join Transfer / outsourced partner (Garfield): the partner runs its
+    // own vehicle — no GPS is expected, so this is informational, never an alarm.
+    if (isPartnerB(bk)) return {c:"var(--grey)", label:"🤝 รถร่วม/พาร์ทเนอร์ — ไม่ติดตาม GPS", rank:0};
     if (!bk.driver) return {c:"var(--grey)", label:"No driver", rank:3};
     if (!(bk.driver in driverAge)) return {c:"var(--grey)", label:"Never sent a signal", rank:2};
     const a = driverAge[bk.driver];
@@ -214,7 +217,11 @@
   // Lifecycle (11 Aug): arrival re-uses the Step-2 completion detection.
   // Partner-operated jobs never alarm (no GPS expected) — past pickup
   // they simply count as done.
-  function isPartnerB(bk) { return (bk.type || "").toLowerCase() !== "private transfer"; }
+  // Partner = Join Transfer (KCE/SWB) OR an outsourced private partner
+  // (Garfield, Zoho Outsourced_Agent = true) — both run their own drivers.
+  function isPartnerB(bk) {
+    return (bk.type || "").toLowerCase() !== "private transfer" || bk.outsourced === true;
+  }
   function lifecycle(bk) {
     if (bk.arrived || (isPartnerB(bk) && bk.pickup_passed)) return "done";
     if (bk.pickup_passed && !bk.arrived && !isPartnerB(bk)) return "missed";

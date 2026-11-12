@@ -303,11 +303,16 @@ def _bookings_today_tomorrow():
              driver_id, provider_id, name, last_name, pickup_loc, dropoff_loc,
              ph_wa, ph, p_zone) in rows:
             drv_phone = None
+            outsourced = False
             if provider_id:
                 try:
                     from gps_ingest import provider_entry_for_id
-                    e = provider_entry_for_id(provider_id)
-                    drv_phone = (e or {}).get("phone") or None
+                    e = provider_entry_for_id(provider_id) or {}
+                    drv_phone = e.get("phone") or None
+                    # Garfield etc.: partner runs its own drivers → the
+                    # templates treat the row like a Join Transfer
+                    # (no GPS expected, never "missed"/attention).
+                    outsourced = bool(e.get("outsourced"))
                 except Exception:
                     pass
             pickup_time = ""
@@ -329,6 +334,7 @@ def _bookings_today_tomorrow():
                 "pickup_location": (pickup_loc or "").strip()[:60],
                 "dropoff_location": (dropoff_loc or "").strip()[:60],
                 "provider_id": provider_id,
+                "outsourced": outsourced,
                 "customer_phone": ((ph_wa or ph) or "").strip() or None,
                 "driver_phone": drv_phone,
                 "arrived": bid in arrived_ids,

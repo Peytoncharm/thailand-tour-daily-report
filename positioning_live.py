@@ -177,10 +177,18 @@ def _scan(for_date=None):
         ages = {r[0]: r for r in conn.execute(
             "SELECT driver_id, ts, lat, lng FROM driver_latest").fetchall()}
     from ferry_model import ISLAND_ZONES
+    from provider_guard import should_block
     for (bid, pickup_ts, drv_code, provider_id, name,
          pickup_loc, zone, dropoff) in rows:
         p_ict = pickup_ts.astimezone(ICT)
         if (p_ict.hour, p_ict.minute) >= (ch, cm):
+            continue
+        # Outsourced partners (Garfield etc.) and protected bus companies
+        # coordinate their own drivers: no roll-call card, no red card,
+        # no escalation (Orathai, 12 Nov 2026).
+        blocked, why = should_block(provider_id=provider_id)
+        if blocked:
+            logger.info(f"[POS-LIVE] skip {bid}: {why}")
             continue
         z = (zone or "").strip().lower()
         if not z:

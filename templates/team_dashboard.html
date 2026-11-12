@@ -255,7 +255,8 @@
         // Partner-operated (Join Transfer + all Tours): hollow diamond,
         // no GPS expectation — product decision 11 Aug. Only Private
         // Transfer keeps the solid fill (our own tracking applies).
-        const isPartner = ((bk.type || "").toLowerCase() !== "private transfer");
+        // Join Transfer OR outsourced private partner (Garfield) — no GPS expected
+        const isPartner = ((bk.type || "").toLowerCase() !== "private transfer") || bk.outsourced === true;
         // Lifecycle: arrival re-uses the Step-2 completion detection
         // (GPS within 300 m of the pickup pin). Partner-operated jobs
         // never alarm — no GPS expected, past-pickup just fades them.
