@@ -199,7 +199,13 @@
     if (!bk.driver) return '<span class="m">None yet ⚠</span>';
     const link = (DEMO || !bk.provider_id)
       ? bk.driver : zlink(`${ZOHO}/CustomModule7/${bk.provider_id}`, bk.driver);
-    return link + phoneLine(bk.driver_phone);
+    // "Verify install" opens /gps/verify/<code>: accepts the driver's pings
+    // for 2 h even outside the job window, so the team can check a fresh
+    // Traccar install themselves (Orathai, 14 Nov 2026). Own drivers only.
+    const verify = (isPartnerB(bk) || DEMO) ? "" :
+      `<div class="m"><a href="/gps/verify/${encodeURIComponent(bk.driver)}?key=${encodeURIComponent(KEY)}" target="_blank" rel="noopener" ` +
+      `style="color:#f0b429;text-decoration:none" title="เปิดหน้ารับสัญญาณ 2 ชม. เพื่อตรวจว่าแอป Traccar ของคนขับส่งตำแหน่งได้">🛰 ตรวจการติดตั้ง</a></div>`;
+    return link + phoneLine(bk.driver_phone) + verify;
   }
 
   function signal(bk) {
