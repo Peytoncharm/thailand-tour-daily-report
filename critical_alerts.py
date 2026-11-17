@@ -67,6 +67,46 @@ def _thai_person(name):
 # Detection
 # ─────────────────────────────────────────────────────────────
 
+# "Departed" rule (Orathai, 17 Nov 2026): after the pickup time, a driver
+# with FRESH GPS who came near the pickup pin and is now well away from it
+# has collected the customer — never raise a missed-pickup red card for him.
+# Guards against geocoded pins that sit outside ARRIVAL_RADIUS_M.
+DEPARTED_NEAR_M = 1500         # came at least this close to the pin...
+DEPARTED_AWAY_M = 3000         # ...and is now at least this far from it
+DEPARTED_LOOKBACK_S = 90 * 60  # track window starts pickup-90 min
+
+
+def _departed_after_pickup(drv_code, pickup_ts, p_lat, p_lng, age_s):
+    """True when the driver's track since pickup-90min passed within
+    DEPARTED_NEAR_M of the pin and his latest fix is >= DEPARTED_AWAY_M from
+    it, with GPS fresh (age <= SILENT_AFTER_S). Never raises."""
+    try:
+        if not drv_code or p_lat is None or p_lng is None:
+            return False
+        if age_s is None or age_s > SILENT_AFTER_S:
+            return False
+        from db import _get_pool
+        from eta_checkpoints import _haversine_m
+        pool = _get_pool()
+        if pool is None:
+            return False
+        plat, plng = float(p_lat), float(p_lng)
+        with pool.connection() as conn:
+            pts = conn.execute(
+                "SELECT lat, lng FROM driver_positions WHERE driver_id = %s "
+                "AND ts >= %s ORDER BY ts LIMIT 2000",
+                ((drv_code or "").upper(),
+                 pickup_ts - timedelta(seconds=DEPARTED_LOOKBACK_S)),
+            ).fetchall()
+        if len(pts) < 2:
+            return False
+        dists = [_haversine_m(float(a), float(b), plat, plng) for a, b in pts]
+        return min(dists) <= DEPARTED_NEAR_M and dists[-1] >= DEPARTED_AWAY_M
+    except Exception as e:
+        logger.warning(f"[CRITICAL] departed check failed {drv_code}: {e}")
+        return False
+
+
 def _detect_states():
     """Return {alert_key: state} for both dangerous states, computed from
     booking_cache + eta_history (arrival) + driver_latest (silence)."""
@@ -154,6 +194,10 @@ def _detect_states():
             if not drv_code or (drv_code or "").upper() not in latest:
                 info["alert_type"] = "missed-pickup-untracked"
                 states[f"missednt:{bid}"] = info
+            elif _departed_after_pickup(drv_code, pickup_ts, p_lat, p_lng,
+                                        ages.get((drv_code or "").upper())):
+                logger.info(f"[CRITICAL] {bid}: driver departed pickup area "
+                            f"with fresh GPS — treating as collected")
             else:
                 info["alert_type"] = "missed-pickup"
                 states[f"missed:{bid}"] = info
