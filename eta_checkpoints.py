@@ -318,10 +318,13 @@ def _haversine_m(lat1, lng1, lat2, lng2):
     a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
     return 2 * R * asin(sqrt(a))
 
-ARRIVAL_RADIUS_M = 300
+# 300 m was too tight for Koh Chang: hotel-name geocodes are often several
+# hundred metres off (Awa Resort 17 Nov 2026: pin 735 m south of the real
+# gate -> missed-pickup red card while the driver was already en route).
+ARRIVAL_RADIUS_M = 1000
 
 def _completion_pass():
-    """Close open checkpoint rows: driver's first GPS fix within 300 m of
+    """Close open checkpoint rows: driver's first GPS fix within ARRIVAL_RADIUS_M of
     the booking's pickup pin (from driver_positions) => actual_sec =
     arrival - computed_at, on_time = arrived before pickup_ts. Rows
     without observable arrival stay open (harmless). Never raises."""
